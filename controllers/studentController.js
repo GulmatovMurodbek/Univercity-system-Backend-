@@ -36,7 +36,7 @@ export const addStudent = async (req, res) => {
     const student = await Student.create({
       fullName,
       email,
-      password: hashedPassword,
+      password,
       phone,
       dateOfBirth,
       paidAmount: paidAmount || 0,
@@ -74,11 +74,6 @@ export const editStudent = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-
-    if (updates.password) {
-      updates.password = await bcrypt.hash(updates.password, 10);
-    }
-
     const student = await Student.findByIdAndUpdate(id, updates, { new: true });
     if (!student)
       return res.status(404).json({ message: "Student not found!" });

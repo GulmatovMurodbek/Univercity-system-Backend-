@@ -17,7 +17,7 @@ export const addTeacher = async (req, res) => {
     const teacher = await Teacher.create({
       fullName,
       email,
-      password: hashedPassword,
+      password,
       phone,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
       subjects: subjects || [],
@@ -45,9 +45,6 @@ export const editTeacher = async (req, res) => {
     const updates = req.body;
 
     // Агар password дода шавад, ҳаш кун
-    if (updates.password) {
-      updates.password = await bcrypt.hash(updates.password, 10);
-    }
 
     const teacher = await Teacher.findByIdAndUpdate(id, updates, { new: true });
     if (!teacher) return res.status(404).json({ message: "Teacher not found!" });
