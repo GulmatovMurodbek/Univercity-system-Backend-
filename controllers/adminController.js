@@ -18,7 +18,7 @@ export const addAdmin = async (req, res) => {
     const admin = await Admin.create({
       fullName,
       email,
-      password: hashedPassword,
+      password,
       phone,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
     });

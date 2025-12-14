@@ -8,15 +8,9 @@ export const getWeeklySchedule = async (req, res) => {
     const { groupId } = req.params;
 
     const schedule = await WeeklySchedule.findOne({ groupId })
-      .populate({
-        path: "week.lessons.subjectId",
-        select: "name",
-      })
-      .populate({
-        path: "week.lessons.teacherId",
-        select: "fullName",
-      })
-      .lean(); // .lean() барои тезтар кор кардан
+      .populate("week.lessons.subjectId", "name")
+      .populate("week.lessons.teacherId", "fullName")
+      .lean();
 
     if (!schedule) {
       return res.status(404).json({ message: "Ҷадвал ёфт нашуд" });
@@ -45,27 +39,26 @@ export const saveWeeklySchedule = async (req, res) => {
       schedule.week = week;
       await schedule.save();
     } else {
-      // Эҷод кардан
-      schedule = await WeeklySchedule.create({ groupId, week });
+      // Эҷод
+      schedule = new WeeklySchedule({ groupId, week });
+      await schedule.save();
     }
 
-    // Ҳамеша populate мекунем, то ки фронтенд номҳоро бинад
-    const populated = await WeeklySchedule.findById(schedule._id)
+    // МУҲИМ: Ҳамеша populate мекунем, то номҳоро баргардонем!
+    const populatedSchedule = await WeeklySchedule.findById(schedule._id)
       .populate("week.lessons.subjectId", "name")
       .populate("week.lessons.teacherId", "fullName")
       .lean();
 
-    res.status(schedule.isNew ? 201 : 200).json(populated);
+    res.json(populatedSchedule);
   } catch (err) {
     console.error("saveWeeklySchedule error:", err);
-
     if (err.name === "ValidationError") {
       return res.status(400).json({ message: "Маълумотҳо нодуруст" });
     }
     if (err.name === "CastError") {
-      return res.status(400).json({ message: "ID-и нодуруст" });
+      return res.status(400).json({ message: "ID нодуруст" });
     }
-
     res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };

@@ -87,20 +87,33 @@ export const deleteGroup = async (req, res) => {
 // ➕ Add student to group
 export const addStudentToGroup = async (req, res) => {
   try {
-    const { groupId, studentId } = req.body;
+    const { groupId, studentId } = req.body; // studentId = array
 
     const group = await Group.findById(groupId);
-    const student = await Student.findById(studentId);
-
-    if (!group || !student) return res.status(404).json({ message: "Group or Student not found!" });
-
-    if (!group.students.includes(studentId)) {
-      group.students.push(studentId);
-      group.studentCount = group.students.length;
-      await group.save();
+    if (!group) {
+      return res.status(404).json({ message: "Group not found!" });
     }
 
-    res.json({ message: "Student added to group!", group });
+    // Санҷиш: studentId бояд array бошад
+    if (!Array.isArray(studentId)) {
+      return res.status(400).json({ message: "studentId must be an array" });
+    }
+
+    // Илова кардани студентҳо бе такрор
+    studentId.forEach(id => {
+      if (!group.students.includes(id)) {
+        group.students.push(id);
+      }
+    });
+
+    group.studentCount = group.students.length;
+    await group.save();
+
+    res.json({
+      message: "Students added to group!",
+      group
+    });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
