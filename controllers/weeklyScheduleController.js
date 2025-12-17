@@ -82,13 +82,15 @@ export const deleteWeeklySchedule = async (req, res) => {
 
 export const getMyTeachingSchedule = async (req, res) => {
   try {
-    const teacherId = req.user.id;
+    const teacherId = req.user.id; // аз JWT token
 
+    // Ҳамаи ҷадвалҳо, ки муаллим дар онҳо ҳаст
     const schedules = await WeeklySchedule.find({
       "week.lessons.teacherId": teacherId,
     })
       .populate("groupId", "name shift")
-      .populate("week.lessons.subjectId", "name");
+      .populate("week.lessons.subjectId", "name")
+      .lean();
 
     if (!schedules.length) {
       return res.json({
@@ -96,38 +98,60 @@ export const getMyTeachingSchedule = async (req, res) => {
         groups: [],
         subjects: [],
         totalHours: 0,
+        todayLessons: [],
       });
     }
 
     const groupsMap = new Map();
     const subjectsSet = new Set();
     let totalHours = 0;
+    const todayLessons = [];
+
+    // Рӯзи ҷорӣ барои todayLessons
+    const today = new Date();
+    const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const currentDayName = daysOfWeek[today.getDay()];
 
     schedules.forEach((schedule) => {
-      if (schedule.groupId) {
-        groupsMap.set(schedule.groupId._id.toString(), {
-          id: schedule.groupId._id,
-          name: schedule.groupId.name,
-          shift: schedule.groupId.shift,
-        });
-      }
+      const groupInfo = {
+        id: schedule.groupId._id.toString(),
+        name: schedule.groupId.name,
+        shift: schedule.groupId.shift,
+      };
+      groupsMap.set(groupInfo.id, groupInfo);
 
+      // Ҳисоби умумӣ (ҳамаи рӯзҳо)
       schedule.week.forEach((day) => {
         day.lessons.forEach((lesson) => {
-          if (lesson.teacherId.toString() === teacherId) {
+          // Санҷиши бехатар: teacherId вуҷуд дошта бошад
+          if (lesson.teacherId && lesson.teacherId.toString() === teacherId) {
             if (lesson.subjectId?.name) {
               subjectsSet.add(lesson.subjectId.name);
             }
             totalHours += 1;
+
+            // Агар рӯзи имрӯз бошад — ба todayLessons илова мекунем
+            if (day.day === currentDayName) {
+              todayLessons.push({
+                lessonNumber: day.lessons.indexOf(lesson) + 1,
+                time: lesson.time || "Номуайян",
+                subject: lesson.subjectId?.name || "—",
+                group: schedule.groupId.name,
+                classroom: lesson.classroom || "—",
+                isCurrent: false, // метавонӣ бо вақти ҷорӣ ҳисоб кунӣ
+              });
+            }
           }
         });
       });
     });
 
+    // Натиҷа
     res.json({
       groups: Array.from(groupsMap.values()),
       subjects: Array.from(subjectsSet),
       totalHours,
+      todayLessons, // ← МУҲИМ: барои "Дарсҳои имрӯз"
     });
   } catch (err) {
     console.error("getMyTeachingSchedule error:", err);
