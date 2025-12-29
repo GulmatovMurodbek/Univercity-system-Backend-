@@ -22,7 +22,7 @@ const journalEntrySchema = new Schema(
     lessonSlot: { type: Number, required: true, min: 1, max: 6 },
     groupId: { type: Schema.Types.ObjectId, ref: "Group", required: true },
     subjectId: { type: Schema.Types.ObjectId, ref: "Subject", required: true },
-    teacherId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    teacherId: { type: Schema.Types.ObjectId, ref: "Teacher", required: true },
     students: [studentRecordSchema]
   },
   { timestamps: true }

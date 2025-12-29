@@ -7,7 +7,8 @@ import {
   getWeeklyAttendance,
   getWeeklyGrades,
   getMyAttendance,
-  getMyGrades,  // НАВ
+  getMyGrades,
+  getAdminNotes,  // НАВ
 } from "../controllers/journalController.js";
 import { auth } from "../middleware/auth.js";
 
@@ -21,6 +22,7 @@ router.get("/weekly-attendance/:groupId",auth(["teacher","admin"]), getWeeklyAtt
 router.get("/weekly-grades/:groupId",auth(["teacher","admin"]), getWeeklyGrades);
 router.get("/my-attendance", auth(["student"]), getMyAttendance);
 router.get("/my-grades", auth(["student"]), getMyGrades);
+router.get("/admin-notes/:groupId",auth(["admin"]),getAdminNotes)
 
 
 export default router;
