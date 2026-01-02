@@ -133,7 +133,6 @@ export const updateJournalEntry = async (req, res) => {
     res.status(500).json({ message: "Хатогии сервер" });
   }
 };
-
 export const getLessonsByGroupAndDate = async (req, res) => {
   try {
     const { groupId, date } = req.params;
@@ -289,10 +288,6 @@ const getCurrentWeekNumber = () => {
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   return Math.max(1, Math.ceil(diffDays / 7));
 };
-
-// controllers/journalController.js
-// controllers/journalController.js
-// controllers/journalController.js
 export const getWeeklyGrades = async (req, res) => {
   try {
     const { groupId } = req.params;
@@ -503,8 +498,8 @@ export const getMyAttendance = async (req, res) => {
           if (studentEntry && j.lessonSlot >= 1 && j.lessonSlot <= 6) {
             const status = studentEntry.attendance;
             lessons[j.lessonSlot - 1] = status === "present" ? "H" :
-                                        status === "absent" ? "N" :
-                                        status === "late" ? "L" : "—";
+              status === "absent" ? "N" :
+                status === "late" ? "L" : "—";
           }
         });
 
@@ -528,8 +523,8 @@ export const getMyAttendance = async (req, res) => {
 
     // Ҳисоби умумӣ
     let total = 0, present = 0;
-    weeks.forEach(w => 
-      w.days.forEach(d => 
+    weeks.forEach(w =>
+      w.days.forEach(d =>
         d.lessons.forEach(l => {
           if (l !== "—") total++;
           if (l === "H") present++;
@@ -549,6 +544,7 @@ export const getMyAttendance = async (req, res) => {
   }
 };
 
+
 export const getMyGrades = async (req, res) => {
   try {
     const studentId = req.user?.id;
@@ -564,12 +560,44 @@ export const getMyGrades = async (req, res) => {
 
     const schedule = await WeeklySchedule.findOne({ groupId }).populate('week.lessons.subjectId', 'name');
 
-    const currentYear = new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1;
-    const semesterStart = new Date(currentYear, 8, 1);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+
+    // Муайян кардани семестри ҷорӣ
+    // Семестри 1: сентябр то 21 декабр
+    // Истгоҳ: 22 декабр то 31 январ
+    // Семестри 2: аз 1 феврал
+
+    let semesterStart;
+    let isSecondSemester = false;
+
+    if (now.getMonth() + 1 === 12 && now.getDate() >= 22) {
+      // Аз 22 декабр — истгоҳ
+      isSecondSemester = false;
+      const startYear = currentYear;
+      semesterStart = new Date(startYear, 8, 1); // 1 сентябр
+    } else if (now.getMonth() >= 0 && now.getMonth() <= 0) { // январ
+      // Январ — ҳанӯз истгоҳ аст → семестри 1 тамом шуд
+      isSecondSemester = false;
+      const startYear = currentYear - 1;
+      semesterStart = new Date(startYear, 8, 1);
+    } else if (now.getMonth() + 1 >= 2) { // феврал ва баъд
+      isSecondSemester = true;
+      semesterStart = new Date(currentYear, 1, 1); // 1 феврал
+    } else {
+      // сентябр то 21 декабр — семестри 1
+      isSecondSemester = false;
+      const startYear = now.getMonth() + 1 >= 9 ? currentYear : currentYear - 1;
+      semesterStart = new Date(startYear, 8, 1); // 1 сентябр
+    }
+
     const today = new Date();
 
+    // Агар дар давраи истгоҳ бошад (22 декабр – 31 январ) → баҳои семестри 1 нишон медиҳем
+    // Аммо агар феврал шуд → аз нав аз феврал
+
     const journals = await JournalEntry.find({
-      "students.studentId": { $exists: true },
+      "students.studentId": studentId,
       date: { $gte: semesterStart, $lte: today }
     })
       .populate("subjectId", "name")
@@ -584,15 +612,13 @@ export const getMyGrades = async (req, res) => {
       });
     }
 
-    const daysEn = [
-      "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
-    ];
+    const daysEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
     const weeks = [];
     let currentWeekStart = new Date(semesterStart);
     let weekNumber = 1;
 
-    while (currentWeekStart <= today) {
+    while (currentWeekStart <= today && weekNumber <= 16) {
       const weekEnd = new Date(currentWeekStart);
       weekEnd.setDate(currentWeekStart.getDate() + 6);
 
@@ -601,6 +627,10 @@ export const getMyGrades = async (req, res) => {
         const dayDate = new Date(currentWeekStart);
         dayDate.setDate(currentWeekStart.getDate() + i);
         if (dayDate > today) break;
+
+        // Агар дар давраи истгоҳ бошад (22 декабр – 31 январ) — рӯзҳоро намепурсем
+        if (!isSecondSemester && dayDate.getMonth() + 1 === 12 && dayDate.getDate() >= 22) continue;
+        if (!isSecondSemester && dayDate.getMonth() === 0) continue; // январ
 
         const dayOfWeek = daysEn[dayDate.getDay()];
         const dayData = schedule?.week.find(d => d.day === dayOfWeek);
@@ -618,9 +648,7 @@ export const getMyGrades = async (req, res) => {
         const dayJournals = journals.filter(j => j.date.toDateString() === dayDate.toDateString());
 
         dayJournals.forEach(j => {
-          const studentEntry = j.students.find(
-            s => s.studentId && s.studentId.toString() === studentId
-          );
+          const studentEntry = j.students.find(s => s.studentId?.toString() === studentId);
           if (studentEntry && j.lessonSlot >= 1 && j.lessonSlot <= 6) {
             const grade = studentEntry.taskGrade ?? studentEntry.preparationGrade ?? null;
             lessons[j.lessonSlot - 1].grade = grade !== null ? grade.toString() : "—";
@@ -640,20 +668,22 @@ export const getMyGrades = async (req, res) => {
         });
       }
 
-      weeks.push({
-        weekNumber,
-        weekStart: format(currentWeekStart, "dd.MM.yyyy"),
-        weekEnd: format(weekEnd > today ? today : weekEnd, "dd.MM.yyyy"),
-        days
-      });
+      if (days.length > 0) {
+        weeks.push({
+          weekNumber,
+          weekStart: format(currentWeekStart, "dd.MM.yyyy"),
+          weekEnd: format(weekEnd > today ? today : weekEnd, "dd.MM.yyyy"),
+          days
+        });
+      }
 
       currentWeekStart.setDate(currentWeekStart.getDate() + 7);
       weekNumber++;
     }
 
     let total = 0, sum = 0, grades = [];
-    weeks.forEach(w => 
-      w.days.forEach(d => 
+    weeks.forEach(w =>
+      w.days.forEach(d =>
         d.lessons.forEach(l => {
           const num = parseFloat(l.grade);
           if (!isNaN(num)) {
@@ -679,9 +709,7 @@ export const getMyGrades = async (req, res) => {
   }
 };
 
-// controllers/journalController.js (қисмати иловагӣ)
 
-// GET — Барои админ: ҳамаи эзоҳҳои гурӯҳи муайян
 export const getAdminNotes = async (req, res) => {
   try {
     const { groupId } = req.params;

@@ -1,11 +1,13 @@
 import express from "express";
-import { addTeacher, getTeachers, editTeacher, deleteTeacher, getTeacherById } from "../controllers/teacherController.js";
+import { addTeacher, getTeachers, editTeacher, deleteTeacher, getTeacherById, changePassword } from "../controllers/teacherController.js";
+import { auth } from "../middleware/auth.js";
 
 const router = express.Router();
 
 router.post("/", addTeacher);
 router.get("/", getTeachers);
-router.get("/:id", getTeacherById); // 🔹 Get teacher by ID
+router.post("/change-password",auth(["teacher","student"]), changePassword);
+router.get("/:id", getTeacherById); 
 router.put("/:id", editTeacher);
 router.delete("/:id", deleteTeacher);
 

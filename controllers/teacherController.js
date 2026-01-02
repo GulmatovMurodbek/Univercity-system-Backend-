@@ -1,5 +1,4 @@
 import Teacher from "../models/Teacher.js";
-import bcrypt from "bcryptjs";
 
 export const addTeacher = async (req, res) => {
   try {
@@ -11,8 +10,6 @@ export const addTeacher = async (req, res) => {
 
     const exists = await Teacher.findOne({ email });
     if (exists) return res.status(400).json({ message: "Email already used!" });
-
-    const hashedPassword = await bcrypt.hash(password, 10);
 
     const teacher = await Teacher.create({
       fullName,
@@ -79,5 +76,48 @@ export const getTeacherById = async (req, res) => {
     res.json(teacher);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+};
+// Иваз кардани пароли муаллим (фақат худи ӯ)
+export const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user.id;
+    const role = req.user.role; // "teacher" ё "student"
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "Ҳарду парол ҳатмиянд!" });
+    }
+
+    if (newPassword.length < 4) {
+      return res.status(400).json({ message: "Пароли нав бояд ҳадди ақал 4 рамз дошта бошад!" });
+    }
+
+    let user;
+    if (role === "teacher") {
+      user = await Teacher.findById(userId);
+    } else if (role === "student") {
+      user = await Student.findById(userId);
+    } else {
+      return res.status(403).json({ message: "Дастрасӣ манъ аст!" });
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: "Корбар ёфт нашуд!" });
+    }
+
+    // Муқоисаи мустақим — БЕ ХЕШ
+    if (user.password !== currentPassword.trim()) {
+      return res.status(400).json({ message: "Пароли кунунӣ нодуруст аст!" });
+    }
+
+    // Пароли навро оддӣ нигоҳ медорем — БЕ ХЕШ
+    user.password = newPassword.trim();
+    await user.save();
+
+    res.json({ message: "Парол бомуваффақият иваз карда шуд!" });
+  } catch (err) {
+    console.error("changePassword error:", err);
+    res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };

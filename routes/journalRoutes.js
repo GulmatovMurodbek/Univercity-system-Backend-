@@ -22,7 +22,7 @@ router.get("/weekly-attendance/:groupId",auth(["teacher","admin"]), getWeeklyAtt
 router.get("/weekly-grades/:groupId",auth(["teacher","admin"]), getWeeklyGrades);
 router.get("/my-attendance", auth(["student"]), getMyAttendance);
 router.get("/my-grades", auth(["student"]), getMyGrades);
-router.get("/admin-notes/:groupId",auth(["admin"]),getAdminNotes)
+router.get("/admin-notes/:groupId/",auth(["admin"]),getAdminNotes)
 
 
 export default router;
