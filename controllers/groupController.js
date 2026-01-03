@@ -5,7 +5,7 @@ import Student from "../models/Student.js";
 // ➕ Add new group
 export const addGroup = async (req, res) => {
   try {
-    const { id, name, course, faculty, subjectCount ,shift} = req.body;
+    const { id, name, course, faculty, subjectCount, shift } = req.body;
 
     if (!id || !name || !course || !faculty) {
       return res.status(400).json({ message: "id, name, course, and faculty are required!" });
@@ -34,7 +34,10 @@ export const addGroup = async (req, res) => {
 // 📋 Get all groups
 export const getGroups = async (req, res) => {
   try {
-    const groups = await Group.find().populate("students");
+    // ⚠️ POPULATE REMOVED FOR PERFORMANCE
+    // Fetching thousands of students just to list groups is too slow.
+    // If you need student count, it is already stored in 'studentCount'.
+    const groups = await Group.find().sort({ name: 1 });
     res.json(groups);
   } catch (err) {
     res.status(500).json({ error: err.message });

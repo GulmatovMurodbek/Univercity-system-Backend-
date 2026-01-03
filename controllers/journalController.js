@@ -280,14 +280,6 @@ export const getWeeklyAttendance = async (req, res) => {
     res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };
-const getCurrentWeekNumber = () => {
-  const currentYear = new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1;
-  const semesterStart = new Date(currentYear, 8, 1); // 1 сентябр
-  const today = new Date();
-  const diffTime = Math.abs(today - semesterStart);
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  return Math.max(1, Math.ceil(diffDays / 7));
-};
 export const getWeeklyGrades = async (req, res) => {
   try {
     const { groupId } = req.params;
@@ -414,8 +406,11 @@ export const getWeeklyGrades = async (req, res) => {
     // Пур кардани баҳоҳо аз журнал
     journals.forEach((journal) => {
       weeks.forEach((w) => {
+        // Fix: Use simple YYYY-MM-DD comparison to avoid timezone issues with toDateString
+        // MongoDB dates are usually ISO. JS Date objects convert to local. 
+        // Best way: Compare formatted strings "YYYY-MM-DD"
         const dayIndex = w.days.findIndex(
-          (d) => d.fullDate.toDateString() === journal.date.toDateString()
+          (d) => d.fullDate.toISOString().split('T')[0] === journal.date.toISOString().split('T')[0]
         );
         if (dayIndex === -1) return;
 
@@ -448,7 +443,6 @@ export const getWeeklyGrades = async (req, res) => {
     res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };
-
 export const getMyAttendance = async (req, res) => {
   try {
     const studentId = req.user?.id; // санҷиши бехатар
@@ -486,7 +480,7 @@ export const getMyAttendance = async (req, res) => {
         if (dayDate > today) break;
 
         const dayJournals = journals.filter(j =>
-          j.date.toDateString() === dayDate.toDateString()
+          j.date.toISOString().split('T')[0] === dayDate.toISOString().split('T')[0]
         );
 
         const lessons = Array(6).fill("—"); // пешфарзӣ
@@ -645,7 +639,7 @@ export const getMyGrades = async (req, res) => {
           });
         }
 
-        const dayJournals = journals.filter(j => j.date.toDateString() === dayDate.toDateString());
+        const dayJournals = journals.filter(j => j.date.toISOString().split('T')[0] === dayDate.toISOString().split('T')[0]);
 
         dayJournals.forEach(j => {
           const studentEntry = j.students.find(s => s.studentId?.toString() === studentId);

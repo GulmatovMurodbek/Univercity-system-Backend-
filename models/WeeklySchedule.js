@@ -53,7 +53,10 @@ const WeeklyScheduleSchema = new Schema(
 );
 
 // Индекс барои тезтар кор кардан
+// Индекс барои тезтар кор кардан
 WeeklyScheduleSchema.index({ groupId: 1 });
+WeeklyScheduleSchema.index({ "week.day": 1 }); // Барои ҷустуҷӯ аз рӯи рӯз
+WeeklyScheduleSchema.index({ "week.lessons.teacherId": 1 }); // Барои муаллимон
 
 export default mongoose.models.WeeklySchedule ||
   mongoose.model("WeeklySchedule", WeeklyScheduleSchema);
