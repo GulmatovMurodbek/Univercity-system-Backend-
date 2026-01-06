@@ -4,11 +4,12 @@ import { auth } from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.post("/", addTeacher);
-router.get("/", getTeachers);
-router.post("/change-password",auth(["teacher","student"]), changePassword);
-router.get("/:id", getTeacherById); 
-router.put("/:id", editTeacher);
-router.delete("/:id", deleteTeacher);
+// Apply checking for admin role for all teacher operations
+router.post("/", auth(["admin"]), addTeacher);
+router.get("/", auth(["admin"]), getTeachers);
+router.post("/change-password", auth(["teacher", "student", "admin"]), changePassword); // Allow admin too if needed, or keep as is
+router.get("/:id", auth(["admin"]), getTeacherById);
+router.put("/:id", auth(["admin"]), editTeacher);
+router.delete("/:id", auth(["admin"]), deleteTeacher);
 
 export default router;

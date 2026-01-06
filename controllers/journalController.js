@@ -5,7 +5,6 @@ import Group from "../models/Groups.js";
 import mongoose from "mongoose";
 import { format } from "date-fns";
 import { ru } from "date-fns/locale";
-import Subject from "../models/Subject.js";
 export const getJournalEntry = async (req, res) => {
   try {
     let { date, shift, slot } = req.params;
@@ -283,17 +282,22 @@ export const getWeeklyAttendance = async (req, res) => {
 export const getWeeklyGrades = async (req, res) => {
   try {
     const { groupId } = req.params;
+    const { subjectId } = req.query;
 
-    // Ҳисоби оғози семестр (1 сентябр)
     const currentYear = new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1;
     const semesterStart = new Date(currentYear, 8, 1);
     const today = new Date();
 
-    // Ҳамаи журналҳо аз оғози семестр то имрӯз
-    const journals = await JournalEntry.find({
+    const query = {
       groupId,
       date: { $gte: semesterStart, $lte: today },
-    })
+    };
+
+    if (subjectId) {
+      query.subjectId = subjectId;
+    }
+
+    const journals = await JournalEntry.find(query)
       .populate({ path: "subjectId", select: "name _id" })
       .populate({ path: "students.studentId", select: "fullName _id" })
       .sort({ date: 1, lessonSlot: 1 });
@@ -305,10 +309,8 @@ export const getWeeklyGrades = async (req, res) => {
 
     if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
-    // Ҷадвали ҳафтагӣ барои ҳисоби шумораи дарсҳо дар ҳар ҳафта
     const schedule = await WeeklySchedule.findOne({ groupId }).populate("week.lessons.subjectId", "name _id");
 
-    // Ҷамъоварии ҳамаи фанҳо (аз журнал + аз ҷадвал)
     const subjectMap = new Map();
     if (schedule) {
       schedule.week.forEach((day) => {
@@ -330,15 +332,10 @@ export const getWeeklyGrades = async (req, res) => {
       name,
     }));
 
-    // Ҳисоби шумораи дарсҳои пешбинишуда дар ҳар ҳафта барои ҳар фан
-    // { subjectId: { weekNumber: count } }
     const weeklyLessonCounts = {};
-
     if (schedule) {
       schedule.week.forEach((day, dayIndex) => {
-        // Ҳар ҳафта 6 рӯз дорад (индекси 0-5 = ҳафтаи 1, 6-11 = ҳафтаи 2 ва ғ.)
         const weekNumber = Math.floor(dayIndex / 6) + 1;
-
         day.lessons.forEach((lesson) => {
           if (lesson.subjectId) {
             const subjId = lesson.subjectId._id.toString();
@@ -350,7 +347,8 @@ export const getWeeklyGrades = async (req, res) => {
       });
     }
 
-    // Сохтани рӯзҳо (то имрӯз, макс. 16 ҳафта)
+    // Days mapping
+    const daysEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const weeks = [];
     let currentWeekStart = new Date(semesterStart);
     let weekNum = 1;
@@ -365,10 +363,32 @@ export const getWeeklyGrades = async (req, res) => {
         date.setDate(currentWeekStart.getDate() + i);
         if (date > today) break;
 
+        // Pre-fill lessons from schedule!
+        const dayOfWeek = daysEn[date.getDay()];
+        const scheduleDay = schedule?.week.find(d => d.day === dayOfWeek);
+
+        const lessonsTemplate = Array(6).fill(null).map(() => ({
+          attendance: null,
+          preparationGrade: null,
+          taskGrade: null,
+          subjectId: null,
+          subjectName: "—",
+        }));
+
+        if (scheduleDay) {
+          scheduleDay.lessons.forEach((l, idx) => {
+            if (l.subjectId && idx < 6) {
+              lessonsTemplate[idx].subjectId = l.subjectId._id.toString();
+              lessonsTemplate[idx].subjectName = l.subjectId.name;
+            }
+          });
+        }
+
         days.push({
           date: format(date, "dd.MM"),
           weekday: format(date, "EEEE", { locale: ru }),
           fullDate: date,
+          lessonsTemplate // Store template to copy for each student
         });
       }
 
@@ -383,7 +403,6 @@ export const getWeeklyGrades = async (req, res) => {
       weekNum++;
     }
 
-    // Сохтани структураи донишҷӯён
     const students = group.students.map((st) => ({
       _id: st._id.toString(),
       fullName: st.fullName || "Ному насаб нест",
@@ -392,23 +411,14 @@ export const getWeeklyGrades = async (req, res) => {
           date: day.date,
           weekday: day.weekday,
           weekNumber: w.weekNumber,
-          lessons: Array(6).fill(null).map(() => ({
-            attendance: null,
-            preparationGrade: null,
-            taskGrade: null,
-            subjectId: null,
-            subjectName: "—",
-          })),
+          // Copy the template so each student has their own object
+          lessons: day.lessonsTemplate.map(l => ({ ...l }))
         }))
       ),
     }));
 
-    // Пур кардани баҳоҳо аз журнал
     journals.forEach((journal) => {
       weeks.forEach((w) => {
-        // Fix: Use simple YYYY-MM-DD comparison to avoid timezone issues with toDateString
-        // MongoDB dates are usually ISO. JS Date objects convert to local. 
-        // Best way: Compare formatted strings "YYYY-MM-DD"
         const dayIndex = w.days.findIndex(
           (d) => d.fullDate.toISOString().split('T')[0] === journal.date.toISOString().split('T')[0]
         );
@@ -419,24 +429,28 @@ export const getWeeklyGrades = async (req, res) => {
 
         journal.students.forEach((s) => {
           const student = students.find((st) => st._id === s.studentId._id.toString());
+          // Make sure to match current journal subject if filtering
           if (student && journal.lessonSlot >= 1 && journal.lessonSlot <= 6) {
+            // Only overwrite if it matches the slot (it should)
             const lesson = student.grades[globalDayIndex].lessons[journal.lessonSlot - 1];
+
+            // Update with actual grade data
             lesson.attendance = s.attendance;
             lesson.preparationGrade = s.preparationGrade;
             lesson.taskGrade = s.taskGrade;
-            lesson.subjectId = journal.subjectId?._id?.toString() || null;
-            lesson.subjectName = journal.subjectId?.name || "—";
+            // Ensure subject info is from the journal (authoritative for this grade)
+            lesson.subjectId = journal.subjectId?._id?.toString() || lesson.subjectId;
+            lesson.subjectName = journal.subjectId?.name || lesson.subjectName;
           }
         });
       });
     });
 
-    // Ҷавоби ниҳоӣ
     res.json({
       groupName: group.name,
       students,
       subjects,
-      weeklyLessonCounts, // Ин муҳим аст!
+      weeklyLessonCounts,
     });
   } catch (err) {
     console.error("getWeeklyGrades error:", err);
