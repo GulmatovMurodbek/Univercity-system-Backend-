@@ -5,9 +5,23 @@ import Group from "../models/Groups.js";
 import mongoose from "mongoose";
 import { format } from "date-fns";
 import { ru } from "date-fns/locale";
+
+// Helper: Санаро ҳамеша ба вақти Душанбе (Asia/Dushanbe) табдил медиҳем
+// Create formatter once to reuse (Performance optimization)
+const dushanbeFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Dushanbe",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+const getDushanbeDateString = (date) => {
+  return dushanbeFormatter.format(new Date(date));
+};
+
 export const getJournalEntry = async (req, res) => {
   try {
-    let { date, shift, slot } = req.params;
+    let { date, shift, slot, groupId, subjectId } = req.params;
     const currentUserId = req.user.id;
 
     // shift-ро ба number табдил медиҳем
@@ -27,55 +41,50 @@ export const getJournalEntry = async (req, res) => {
     ][targetDate.getDay()];
     const lessonSlot = Number(slot);
 
-    // Ҷустуҷӯи ҳамаи ҷадвалҳо
-    const allSchedules = await WeeklySchedule.find({}).populate([
+    // 1. Ҷадвали махсуси ҳамин гурӯҳро мегирем
+    const schedule = await WeeklySchedule.findOne({ groupId }).populate([
       { path: "week.lessons.subjectId", select: "name" },
       { path: "week.lessons.teacherId", select: "fullName" },
     ]);
 
-    let foundLesson = null;
-    let targetGroupId = null;
-    let targetTeacherId = null;
-
-    for (const schedule of allSchedules) {
-      const dayData = schedule.week.find((d) => d.day === dayOfWeekEn);
-      if (!dayData || !dayData.lessons[lessonSlot - 1]) continue;
-
-      const lesson = dayData.lessons[lessonSlot - 1];
-
-      // Аз вақт shift-ро муайян мекунем
-      const timeStart = lesson.time.split(" - ")[0];
-      const lessonShift = timeStart >= "13:00" ? 2 : 1;
-
-      if (lessonShift === shift && lesson.teacherId) {
-        foundLesson = lesson;
-        targetGroupId = schedule.groupId;
-        targetTeacherId = lesson.teacherId._id;
-        break;
-      }
+    if (!schedule) {
+      return res.status(404).json({ message: "Ҷадвали ин гурӯҳ ёфт нашуд" });
     }
 
-    if (!foundLesson) {
-      return res
-        .status(404)
-        .json({
-          message: "Дар ин рӯз ва слот дарс нест ё ба шумо тааллуқ надорад",
-        });
+    // 2. Дарси лозимиро дар ҷадвал меёбем (барои ҳамин вақт ва ҳамин фан)
+    const dayData = schedule.week.find((d) => d.day === dayOfWeekEn);
+    if (!dayData) {
+      return res.status(404).json({ message: "Дар ин рӯз дарс нест" });
     }
 
-    // Журналро меҷӯем (ё эҷод мекунем)
+    const lesson = dayData.lessons[lessonSlot - 1];
+    if (!lesson || !lesson.subjectId || String(lesson.subjectId._id) !== subjectId) {
+      return res.status(404).json({ message: "Дар ин вақт ин фан дар ҷадвал нест" });
+    }
+
+    // shift-ро месанҷем
+    const timeStart = lesson.time.split(" - ")[0];
+    const lessonShift = timeStart >= "13:00" ? 2 : 1;
+    if (lessonShift !== shift) {
+      return res.status(400).json({ message: "Басти дарс (shift) мувофиқат намекунад" });
+    }
+
+    const targetTeacherId = lesson.teacherId?._id;
+
+    // 3. Журналро меҷӯем (ё эҷод мекунем)
     let journal = await JournalEntry.findOne({
       date: targetDate,
       shift,
       lessonSlot,
-      groupId: targetGroupId,
-      teacherId: targetTeacherId,
+      groupId,
+      subjectId,
     }).populate({
       path: "students.studentId",
-      select: "fullName", // fullName-ро ҳам илова кун!
+      select: "fullName",
     });
+
     if (!journal) {
-      const group = await Group.findById(targetGroupId).populate("students");
+      const group = await Group.findById(groupId).populate("students");
       if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
       const studentsRecords = group.students.map((st) => ({
@@ -90,10 +99,11 @@ export const getJournalEntry = async (req, res) => {
         date: targetDate,
         shift,
         lessonSlot,
-        groupId: targetGroupId,
-        subjectId: foundLesson.subjectId._id,
+        groupId,
+        subjectId,
         teacherId: targetTeacherId,
-        students: studentsRecords, // ИНРО ИВАЗ КАРДӢ!
+        lessonType: lesson.lessonType || "practice",
+        students: studentsRecords,
       });
 
       await journal.populate("students.studentId", "fullName");
@@ -176,8 +186,9 @@ export const getLessonsByGroupAndDate = async (req, res) => {
     }
 
     const lessons = dayData.lessons
-      .filter((lesson) => lesson.subjectId)
       .map((lesson, index) => {
+        if (!lesson || !lesson.subjectId) return null;
+
         const isSecondShift =
           lesson.time.includes("13:") ||
           lesson.time.includes("14:") ||
@@ -187,11 +198,15 @@ export const getLessonsByGroupAndDate = async (req, res) => {
 
         return {
           subjectName: lesson.subjectId.name,
+          subjectId: lesson.subjectId._id,
           teacherName: lesson.teacherId?.fullName || "Муаллим нест",
+          teacherId: lesson.teacherId?._id,
+          lessonType: lesson.lessonType || "practice",
           shift,
           slot,
         };
-      });
+      })
+      .filter((l) => l !== null);
 
     const group = await Group.findById(groupId).select("name");
     const groupName = group?.name || "Гурӯҳ";
@@ -253,17 +268,30 @@ export const getWeeklyAttendance = async (req, res) => {
       }))
     }));
 
-    // Пур кардани маълумотҳо
-    journals.forEach(journal => {
-      const dayIndex = days.findIndex(d => d.fullDate.toDateString() === journal.date.toDateString());
-      if (dayIndex === -1) return;
+    // OPTIMIZATION: Create Map for journals by date string
+    const journalMap = new Map();
+    journals.forEach(j => {
+      const dKey = getDushanbeDateString(j.date);
+      if (!journalMap.has(dKey)) journalMap.set(dKey, []);
+      journalMap.get(dKey).push(j);
+    });
 
-      journal.students.forEach(s => {
-        const student = students.find(st => st._id.toString() === s.studentId._id.toString());
-        if (student && journal.lessonSlot >= 1 && journal.lessonSlot <= 6) {
-          student.attendance[dayIndex].lessons[journal.lessonSlot - 1] = s.attendance;
-        }
-      });
+    // Пур кардани маълумотҳо
+    // Iterate days, look up journals in Map (O(1)) instead of array find
+    days.forEach((day, dayIndex) => {
+      const dKey = getDushanbeDateString(day.fullDate);
+      const dayJournals = journalMap.get(dKey);
+
+      if (dayJournals) {
+        dayJournals.forEach(journal => {
+          journal.students.forEach(s => {
+            const student = students.find(st => st._id.toString() === s.studentId._id.toString());
+            if (student && journal.lessonSlot >= 1 && journal.lessonSlot <= 6) {
+              student.attendance[dayIndex].lessons[journal.lessonSlot - 1] = s.attendance;
+            }
+          });
+        });
+      }
     });
 
     res.json({
@@ -300,16 +328,16 @@ export const getWeeklyGrades = async (req, res) => {
     const journals = await JournalEntry.find(query)
       .populate({ path: "subjectId", select: "name _id" })
       .populate({ path: "students.studentId", select: "fullName _id" })
-      .sort({ date: 1, lessonSlot: 1 });
+      .lean();
 
     const group = await Group.findById(groupId).populate({
       path: "students",
       select: "fullName _id",
-    });
+    }).lean();
 
     if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
-    const schedule = await WeeklySchedule.findOne({ groupId }).populate("week.lessons.subjectId", "name _id");
+    const schedule = await WeeklySchedule.findOne({ groupId }).populate("week.lessons.subjectId", "name _id").lean();
 
     const subjectMap = new Map();
     if (schedule) {
@@ -347,23 +375,27 @@ export const getWeeklyGrades = async (req, res) => {
       });
     }
 
-    // Days mapping
+    // MAP JOURNALS BY DATE
+    const journalsByDate = new Map();
+    journals.forEach(j => {
+      const dKey = getDushanbeDateString(new Date(j.date));
+      if (!journalsByDate.has(dKey)) journalsByDate.set(dKey, []);
+      journalsByDate.get(dKey).push(j);
+    });
+
     const daysEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const weeks = [];
     let currentWeekStart = new Date(semesterStart);
     let weekNum = 1;
 
     while (currentWeekStart <= today && weekNum <= 16) {
-      const weekEnd = new Date(currentWeekStart);
-      weekEnd.setDate(currentWeekStart.getDate() + 6);
-
       const days = [];
       for (let i = 0; i < 6; i++) {
         const date = new Date(currentWeekStart);
         date.setDate(currentWeekStart.getDate() + i);
         if (date > today) break;
 
-        // Pre-fill lessons from schedule!
+        const dateStr = getDushanbeDateString(date);
         const dayOfWeek = daysEn[date.getDay()];
         const scheduleDay = schedule?.week.find(d => d.day === dayOfWeek);
 
@@ -373,6 +405,7 @@ export const getWeeklyGrades = async (req, res) => {
           taskGrade: null,
           subjectId: null,
           subjectName: "—",
+          lessonType: null,
         }));
 
         if (scheduleDay) {
@@ -380,6 +413,7 @@ export const getWeeklyGrades = async (req, res) => {
             if (l.subjectId && idx < 6) {
               lessonsTemplate[idx].subjectId = l.subjectId._id.toString();
               lessonsTemplate[idx].subjectName = l.subjectId.name;
+              lessonsTemplate[idx].lessonType = l.lessonType || "practice";
             }
           });
         }
@@ -388,7 +422,8 @@ export const getWeeklyGrades = async (req, res) => {
           date: format(date, "dd.MM"),
           weekday: format(date, "EEEE", { locale: ru }),
           fullDate: date,
-          lessonsTemplate // Store template to copy for each student
+          lessonsTemplate,
+          dateStr // Needed for mapping
         });
       }
 
@@ -398,7 +433,6 @@ export const getWeeklyGrades = async (req, res) => {
           days,
         });
       }
-
       currentWeekStart.setDate(currentWeekStart.getDate() + 7);
       weekNum++;
     }
@@ -407,44 +441,43 @@ export const getWeeklyGrades = async (req, res) => {
       _id: st._id.toString(),
       fullName: st.fullName || "Ному насаб нест",
       grades: weeks.flatMap((w) =>
-        w.days.map((day) => ({
-          date: day.date,
-          weekday: day.weekday,
-          weekNumber: w.weekNumber,
-          // Copy the template so each student has their own object
-          lessons: day.lessonsTemplate.map(l => ({ ...l }))
-        }))
+        w.days.map((day) => {
+          // Clone the template for this student
+          const lessons = day.lessonsTemplate.map(l => ({ ...l }));
+
+          // Get journals for this specific day
+          const daysJournals = journalsByDate.get(day.dateStr);
+
+          if (daysJournals) {
+            daysJournals.forEach(journal => {
+              // Find this student's entry in the journal
+              const sEntry = journal.students.find(s => s.studentId._id.toString() === st._id.toString());
+
+              if (sEntry && journal.lessonSlot >= 1 && journal.lessonSlot <= 6) {
+                const lesson = lessons[journal.lessonSlot - 1];
+                lesson.attendance = sEntry.attendance;
+                lesson.preparationGrade = sEntry.preparationGrade;
+                lesson.taskGrade = sEntry.taskGrade;
+                lesson.lessonType = journal.lessonType || "practice";
+
+                // Ensure subject ID matches the journal (source of truth)
+                if (journal.subjectId) {
+                  lesson.subjectId = journal.subjectId._id.toString();
+                  lesson.subjectName = journal.subjectId.name;
+                }
+              }
+            });
+          }
+
+          return {
+            date: day.date,
+            weekday: day.weekday,
+            weekNumber: w.weekNumber,
+            lessons
+          };
+        })
       ),
     }));
-
-    journals.forEach((journal) => {
-      weeks.forEach((w) => {
-        const dayIndex = w.days.findIndex(
-          (d) => d.fullDate.toISOString().split('T')[0] === journal.date.toISOString().split('T')[0]
-        );
-        if (dayIndex === -1) return;
-
-        const globalDayIndex =
-          weeks.slice(0, w.weekNumber - 1).reduce((acc, ww) => acc + ww.days.length, 0) + dayIndex;
-
-        journal.students.forEach((s) => {
-          const student = students.find((st) => st._id === s.studentId._id.toString());
-          // Make sure to match current journal subject if filtering
-          if (student && journal.lessonSlot >= 1 && journal.lessonSlot <= 6) {
-            // Only overwrite if it matches the slot (it should)
-            const lesson = student.grades[globalDayIndex].lessons[journal.lessonSlot - 1];
-
-            // Update with actual grade data
-            lesson.attendance = s.attendance;
-            lesson.preparationGrade = s.preparationGrade;
-            lesson.taskGrade = s.taskGrade;
-            // Ensure subject info is from the journal (authoritative for this grade)
-            lesson.subjectId = journal.subjectId?._id?.toString() || lesson.subjectId;
-            lesson.subjectName = journal.subjectId?.name || lesson.subjectName;
-          }
-        });
-      });
-    });
 
     res.json({
       groupName: group.name,
@@ -494,7 +527,7 @@ export const getMyAttendance = async (req, res) => {
         if (dayDate > today) break;
 
         const dayJournals = journals.filter(j =>
-          j.date.toISOString().split('T')[0] === dayDate.toISOString().split('T')[0]
+          getDushanbeDateString(j.date) === getDushanbeDateString(dayDate)
         );
 
         const lessons = Array(6).fill("—"); // пешфарзӣ
@@ -601,16 +634,14 @@ export const getMyGrades = async (req, res) => {
 
     const today = new Date();
 
-    // Агар дар давраи истгоҳ бошад (22 декабр – 31 январ) → баҳои семестри 1 нишон медиҳем
-    // Аммо агар феврал шуд → аз нав аз феврал
-
     const journals = await JournalEntry.find({
       "students.studentId": studentId,
       date: { $gte: semesterStart, $lte: today }
     })
       .populate("subjectId", "name")
       .select("date lessonSlot subjectId students")
-      .sort({ date: 1, lessonSlot: 1 });
+      .sort({ date: 1, lessonSlot: 1 })
+      .lean();
 
     if (!journals.length && !schedule) {
       return res.json({
@@ -620,8 +651,15 @@ export const getMyGrades = async (req, res) => {
       });
     }
 
-    const daysEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    // OPTIMIZATION: Map journals by date for O(1) lookup
+    const journalsByDate = new Map();
+    journals.forEach(j => {
+      const dKey = getDushanbeDateString(new Date(j.date));
+      if (!journalsByDate.has(dKey)) journalsByDate.set(dKey, []);
+      journalsByDate.get(dKey).push(j);
+    });
 
+    const daysEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const weeks = [];
     let currentWeekStart = new Date(semesterStart);
     let weekNumber = 1;
@@ -636,14 +674,10 @@ export const getMyGrades = async (req, res) => {
         dayDate.setDate(currentWeekStart.getDate() + i);
         if (dayDate > today) break;
 
-        // Агар дар давраи истгоҳ бошад (22 декабр – 31 январ) — рӯзҳоро намепурсем
-        if (!isSecondSemester && dayDate.getMonth() + 1 === 12 && dayDate.getDate() >= 22) continue;
-        if (!isSecondSemester && dayDate.getMonth() === 0) continue; // январ
-
         const dayOfWeek = daysEn[dayDate.getDay()];
         const dayData = schedule?.week.find(d => d.day === dayOfWeek);
 
-        const lessons = Array(6).fill({ grade: "—", subject: "—" });
+        const lessons = Array(6).fill(null).map(() => ({ grade: "—", subject: "—" }));
 
         if (dayData) {
           dayData.lessons.forEach((lesson, index) => {
@@ -652,8 +686,6 @@ export const getMyGrades = async (req, res) => {
             }
           });
         }
-
-        const dayJournals = journals.filter(j => j.date.toISOString().split('T')[0] === dayDate.toISOString().split('T')[0]);
 
         dayJournals.forEach(j => {
           const studentEntry = j.students.find(s => s.studentId?.toString() === studentId);
@@ -742,7 +774,7 @@ export const getAdminNotes = async (req, res) => {
         // Фақат агар notes дошта бошад ва холӣ набошад
         if (studentEntry.notes && studentEntry.notes.trim() !== "") {
           notes.push({
-            date: format(journal.date, "dd.MM.yyyy"),
+            date: getDushanbeDateString(journal.date).split("-").reverse().join("."),
             subject: journal.subjectId?.name || "—",
             teacher: journal.teacherId?.fullName || "Муаллим нест",
             group: journal.groupId?.name || "Гурӯҳ",
@@ -800,7 +832,7 @@ export const getMyNotes = async (req, res) => {
 
       if (studentEntry && studentEntry.notes && studentEntry.notes.trim() !== "") {
         notes.push({
-          date: format(journal.date, "dd.MM.yyyy"),
+          date: getDushanbeDateString(journal.date).split("-").reverse().join("."),
           subject: journal.subjectId?.name || "—",
           teacher: journal.teacherId?.fullName || "Муаллим нест",
           group: journal.groupId?.name || "Гурӯҳ",

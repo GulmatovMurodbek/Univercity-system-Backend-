@@ -8,7 +8,7 @@ import {
   getWeeklyGrades,
   getMyAttendance,
   getMyGrades,
-  getAdminNotes,  // НАВ
+  getAdminNotes
 } from "../controllers/journalController.js";
 import { auth } from "../middleware/auth.js";
 
@@ -16,7 +16,7 @@ const router = express.Router();
 
 
 router.get("/group/:groupId/:date", getLessonsByGroupAndDate);
-router.get("/:date/:shift/:slot", auth(["teacher", "admin"]), getJournalEntry);
+router.get("/:date/:shift/:slot/:groupId/:subjectId", auth(["teacher", "admin"]), getJournalEntry);
 router.put("/:id", auth(["teacher", "admin"]), updateJournalEntry);
 router.get("/weekly-attendance/:groupId", auth(["teacher", "admin"]), getWeeklyAttendance);
 router.get("/weekly-grades/:groupId", auth(["teacher", "admin"]), getWeeklyGrades);

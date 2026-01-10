@@ -23,6 +23,11 @@ const journalEntrySchema = new Schema(
     groupId: { type: Schema.Types.ObjectId, ref: "Group", required: true },
     subjectId: { type: Schema.Types.ObjectId, ref: "Subject", required: true },
     teacherId: { type: Schema.Types.ObjectId, ref: "Teacher", required: true },
+    lessonType: {
+      type: String,
+      enum: ["lecture", "practice", "lab"],
+      default: "practice"
+    },
     students: [studentRecordSchema]
   },
   { timestamps: true }
@@ -30,6 +35,8 @@ const journalEntrySchema = new Schema(
 
 // Индекс
 journalEntrySchema.index({ date: 1, shift: 1, lessonSlot: 1, teacherId: 1 });
+journalEntrySchema.index({ groupId: 1, date: 1 });
+journalEntrySchema.index({ "students.studentId": 1, date: 1 });
 
 const JournalEntry = mongoose.model("JournalEntry", journalEntrySchema);
 export default JournalEntry;

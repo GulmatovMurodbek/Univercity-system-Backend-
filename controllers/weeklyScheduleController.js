@@ -7,10 +7,33 @@ export const getWeeklySchedule = async (req, res) => {
   try {
     const { groupId } = req.params;
 
+    if (groupId === "ALL") {
+      // Истифодаи lean() ва танҳо майдонҳои лозима
+      const schedules = await WeeklySchedule.find()
+        .populate({
+          path: "groupId",
+          select: "name shift faculty"
+        })
+        .populate({
+          path: "week.lessons.subjectId",
+          select: "name"
+        })
+        .populate({
+          path: "week.lessons.teacherId",
+          select: "fullName"
+        })
+        .lean()
+        .exec();
+        
+      return res.json(schedules);
+    }
+
     const schedule = await WeeklySchedule.findOne({ groupId })
+      .populate("groupId", "name shift faculty")
       .populate("week.lessons.subjectId", "name")
       .populate("week.lessons.teacherId", "fullName")
-      .lean();
+      .lean()
+      .exec();
 
     if (!schedule) {
       return res.status(404).json({ message: "Ҷадвал ёфт нашуд" });

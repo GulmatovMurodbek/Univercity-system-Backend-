@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import compression from "compression";
 import dotenv from "dotenv";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
@@ -13,6 +14,7 @@ import journalRoutes from "./routes/journalRoutes.js"
 dotenv.config();
 const app = express();
 
+app.use(compression()); // Enable GZIP compression
 app.use(cors());
 app.use(express.json());
 
@@ -22,13 +24,13 @@ connectDB();
 app.use("/api/auth", authRoutes);
 
 // Student routes
-app.use("/api/students",studentRoutes );
-app.use("/api/groups",groupRoutes );
+app.use("/api/students", studentRoutes);
+app.use("/api/groups", groupRoutes);
 
 // Teacher routes
 app.use("/api/teachers", teacherRoutes);
 app.use("/api/admins", adminRoutes);
-app.use("/api/subjects",subjectRoutes)
-app.use("/api/weeklySchedule",weeklyScheduleRoutes)
+app.use("/api/subjects", subjectRoutes)
+app.use("/api/weeklySchedule", weeklyScheduleRoutes)
 app.use('/api/journal', journalRoutes);
 app.listen(5000, () => console.log("Server running on port 5000"));
