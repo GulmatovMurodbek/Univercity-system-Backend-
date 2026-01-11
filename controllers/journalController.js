@@ -593,73 +593,83 @@ export const getMyGrades = async (req, res) => {
       return res.status(401).json({ message: "Донишҷӯ сабт нашудааст" });
     }
 
-    const group = await Group.findOne({ students: studentId }).select('_id');
+    // 1) Гурӯҳи донишҷӯро ёфтан
+    const group = await Group.findOne({ students: studentId }).select("_id name").lean();
     if (!group) {
       return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
     }
+
     const groupId = group._id;
 
-    const schedule = await WeeklySchedule.findOne({ groupId }).populate('week.lessons.subjectId', 'name');
+    // 2) Ҷадвали ҳафтаинаи гурӯҳ
+    const schedule = await WeeklySchedule.findOne({ groupId })
+      .populate("week.lessons.subjectId", "name _id")
+      .lean();
 
     const now = new Date();
     const currentYear = now.getFullYear();
 
-    // Муайян кардани семестри ҷорӣ
-    // Семестри 1: сентябр то 21 декабр
-    // Истгоҳ: 22 декабр то 31 январ
-    // Семестри 2: аз 1 феврал
-
+    /**
+     * Муайян кардани семестр:
+     * Sem 1: аз 1 сентябр то 21 декабр
+     * Istogah: 22 декабр - 31 январ (то ҳол Sem 1 ҳисоб мешавад)
+     * Sem 2: аз 1 феврал
+     */
     let semesterStart;
     let isSecondSemester = false;
 
     if (now.getMonth() + 1 === 12 && now.getDate() >= 22) {
-      // Аз 22 декабр — истгоҳ
+      // Аз 22 декабр — истгоҳ → ҳанӯз Semester 1
       isSecondSemester = false;
-      const startYear = currentYear;
-      semesterStart = new Date(startYear, 8, 1); // 1 сентябр
-    } else if (now.getMonth() >= 0 && now.getMonth() <= 0) { // январ
-      // Январ — ҳанӯз истгоҳ аст → семестри 1 тамом шуд
+      semesterStart = new Date(currentYear, 8, 1); // 1 сентябр
+    } else if (now.getMonth() === 0) {
+      // январ → истгоҳ → ҳанӯз Semester 1 (оғози соли гузашта)
       isSecondSemester = false;
-      const startYear = currentYear - 1;
-      semesterStart = new Date(startYear, 8, 1);
-    } else if (now.getMonth() + 1 >= 2) { // феврал ва баъд
+      semesterStart = new Date(currentYear - 1, 8, 1);
+    } else if (now.getMonth() + 1 >= 2) {
+      // феврал ё баъд → Semester 2
       isSecondSemester = true;
       semesterStart = new Date(currentYear, 1, 1); // 1 феврал
     } else {
-      // сентябр то 21 декабр — семестри 1
+      // сентябр то 21 декабр
       isSecondSemester = false;
       const startYear = now.getMonth() + 1 >= 9 ? currentYear : currentYear - 1;
-      semesterStart = new Date(startYear, 8, 1); // 1 сентябр
+      semesterStart = new Date(startYear, 8, 1);
     }
 
     const today = new Date();
 
+    // 3) JournalEntry-ҳо (фақат дар ҳамин семестр ва барои ҳамин student)
     const journals = await JournalEntry.find({
       "students.studentId": studentId,
-      date: { $gte: semesterStart, $lte: today }
+      date: { $gte: semesterStart, $lte: today },
     })
-      .populate("subjectId", "name")
-      .select("date lessonSlot subjectId students")
+      .populate("subjectId", "name _id")
+      .select("date lessonSlot subjectId lessonType students.studentId students.taskGrade students.preparationGrade")
       .sort({ date: 1, lessonSlot: 1 })
       .lean();
 
-    if (!journals.length && !schedule) {
+    if ((!journals || journals.length === 0) && !schedule) {
       return res.json({
         message: "Шумо ҳанӯз баҳо нагирифтаед",
+        semester: isSecondSemester ? 2 : 1,
+        semesterStart: getDushanbeDateString(semesterStart),
         weeks: [],
-        stats: { total: 0, average: 0, maxGrade: 0, minGrade: 0 }
+        stats: { total: 0, average: 0, maxGrade: 0, minGrade: 0 },
       });
     }
 
-    // OPTIMIZATION: Map journals by date for O(1) lookup
+    // 4) Map journals бо date барои lookup O(1)
     const journalsByDate = new Map();
-    journals.forEach(j => {
-      const dKey = getDushanbeDateString(new Date(j.date));
+    journals.forEach((j) => {
+      const dKey = getDushanbeDateString(j.date);
       if (!journalsByDate.has(dKey)) journalsByDate.set(dKey, []);
       journalsByDate.get(dKey).push(j);
     });
 
+    // 5) Сохтани ҳафтаҳо (1-16 ҳафта)
     const daysEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
     const weeks = [];
     let currentWeekStart = new Date(semesterStart);
     let weekNumber = 1;
@@ -669,42 +679,74 @@ export const getMyGrades = async (req, res) => {
       weekEnd.setDate(currentWeekStart.getDate() + 6);
 
       const days = [];
+
+      // Душанбе то Шанбе (6 рӯз)
       for (let i = 0; i < 6; i++) {
         const dayDate = new Date(currentWeekStart);
         dayDate.setDate(currentWeekStart.getDate() + i);
         if (dayDate > today) break;
 
         const dayOfWeek = daysEn[dayDate.getDay()];
-        const dayData = schedule?.week.find(d => d.day === dayOfWeek);
+        const dayData = schedule?.week?.find((d) => d.day === dayOfWeek);
 
-        const lessons = Array(6).fill(null).map(() => ({ grade: "—", subject: "—" }));
+        // Template барои 6 дарс
+        const lessons = Array(6)
+          .fill(null)
+          .map(() => ({
+            grade: "—",
+            subject: "—",
+          }));
 
-        if (dayData) {
+        // Аз schedule фанҳоро пур мекунем (то фан нишон диҳад ҳатто агар баҳо набошад)
+        if (dayData?.lessons?.length) {
           dayData.lessons.forEach((lesson, index) => {
-            if (lesson.subjectId) {
-              lessons[index] = { grade: "—", subject: lesson.subjectId.name || "—" };
+            if (index < 6 && lesson?.subjectId) {
+              lessons[index] = {
+                grade: "—",
+                subject: lesson.subjectId.name || "—",
+              };
             }
           });
         }
 
-        dayJournals.forEach(j => {
-          const studentEntry = j.students.find(s => s.studentId?.toString() === studentId);
-          if (studentEntry && j.lessonSlot >= 1 && j.lessonSlot <= 6) {
-            const grade = studentEntry.taskGrade ?? studentEntry.preparationGrade ?? null;
-            lessons[j.lessonSlot - 1].grade = grade !== null ? grade.toString() : "—";
+        // ✅ ИН ҶО FIX: dayJournals define мешавад
+        const dKey = getDushanbeDateString(dayDate);
+        const dayJournals = journalsByDate.get(dKey) || [];
+
+        // пур кардани баҳоҳо аз журнал
+        dayJournals.forEach((j) => {
+          const studentEntry = j.students.find(
+            (s) => s.studentId?.toString() === studentId
+          );
+
+          if (!studentEntry) return;
+
+          if (j.lessonSlot >= 1 && j.lessonSlot <= 6) {
+            const grade =
+              studentEntry.taskGrade ?? studentEntry.preparationGrade ?? null;
+
+            lessons[j.lessonSlot - 1].grade =
+              grade !== null && grade !== undefined ? String(grade) : "—";
+
+            // subject name аз journal (source of truth) агар schedule нест/холӣ бошад
+            if (
+              lessons[j.lessonSlot - 1].subject === "—" &&
+              j.subjectId?.name
+            ) {
+              lessons[j.lessonSlot - 1].subject = j.subjectId.name;
+            }
           }
         });
 
-        lessons.forEach(lesson => {
-          if (lesson.grade === "—" && lesson.subject !== "—") {
-            lesson.grade = "0";
-          }
+        // Агар дар schedule фан ҳаст, аммо баҳо нест -> 0
+        lessons.forEach((l) => {
+          if (l.subject !== "—" && l.grade === "—") l.grade = "0";
         });
 
         days.push({
           date: format(dayDate, "dd.MM"),
           weekday: format(dayDate, "EEEE", { locale: ru }),
-          lessons
+          lessons,
         });
       }
 
@@ -713,7 +755,7 @@ export const getMyGrades = async (req, res) => {
           weekNumber,
           weekStart: format(currentWeekStart, "dd.MM.yyyy"),
           weekEnd: format(weekEnd > today ? today : weekEnd, "dd.MM.yyyy"),
-          days
+          days,
         });
       }
 
@@ -721,33 +763,49 @@ export const getMyGrades = async (req, res) => {
       weekNumber++;
     }
 
-    let total = 0, sum = 0, grades = [];
-    weeks.forEach(w =>
-      w.days.forEach(d =>
-        d.lessons.forEach(l => {
+    // 6) Stats ҳисоб мекунем
+    let total = 0;
+    let sum = 0;
+    let gradesArr = [];
+
+    weeks.forEach((w) =>
+      w.days.forEach((d) =>
+        d.lessons.forEach((l) => {
           const num = parseFloat(l.grade);
           if (!isNaN(num)) {
             total++;
             sum += num;
-            grades.push(num);
+            gradesArr.push(num);
           }
         })
       )
     );
 
     const average = total > 0 ? Math.round((sum / total) * 10) / 10 : 0;
-    const maxGrade = grades.length > 0 ? Math.max(...grades) : 0;
-    const minGrade = grades.length > 0 ? Math.min(...grades) : 0;
+    const maxGrade = gradesArr.length ? Math.max(...gradesArr) : 0;
+    const minGrade = gradesArr.length ? Math.min(...gradesArr) : 0;
 
-    res.json({
+    return res.json({
+      semester: isSecondSemester ? 2 : 1,
+      semesterStart: getDushanbeDateString(semesterStart),
+      group: {
+        _id: groupId,
+        name: group.name,
+      },
       weeks,
-      stats: { total, average, maxGrade, minGrade }
+      stats: {
+        total,
+        average,
+        maxGrade,
+        minGrade,
+      },
     });
   } catch (err) {
     console.error("getMyGrades error:", err);
-    res.status(500).json({ message: "Хатогӣ дар сервер" });
+    return res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };
+
 
 
 export const getAdminNotes = async (req, res) => {
