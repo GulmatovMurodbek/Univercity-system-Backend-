@@ -24,8 +24,10 @@ export const getWeeklySchedule = async (req, res) => {
         })
         .lean()
         .exec();
-        
-      return res.json(schedules);
+
+      // Filter out schedules where the group no longer exists
+      const validSchedules = schedules.filter(s => s.groupId !== null);
+      return res.json(validSchedules);
     }
 
     const schedule = await WeeklySchedule.findOne({ groupId })

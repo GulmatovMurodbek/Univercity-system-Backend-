@@ -1,6 +1,7 @@
 import Groups from "../models/Groups.js";
 import Group from "../models/Groups.js";
 import Student from "../models/Student.js";
+import WeeklySchedule from "../models/WeeklySchedule.js";
 
 // ➕ Add new group
 export const addGroup = async (req, res) => {
@@ -80,6 +81,9 @@ export const deleteGroup = async (req, res) => {
     const group = await Group.findByIdAndDelete(id);
 
     if (!group) return res.status(404).json({ message: "Group not found!" });
+
+    // Cascade delete associated weekly schedule
+    await WeeklySchedule.findOneAndDelete({ groupId: id });
 
     res.json({ message: "Group deleted!" });
   } catch (err) {
