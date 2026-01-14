@@ -30,7 +30,31 @@ export const getWeeklySchedule = async (req, res) => {
       return res.json(validSchedules);
     }
 
-    const schedule = await WeeklySchedule.findOne({ groupId })
+    // Ҳисоби семестри ҷорӣ (default)
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    let currentSemester = 1;
+
+    // Logic: 
+    // Sep (8) - Jan (0) -> Sem 1
+    // Feb (1) - Jun (5) -> Sem 2 (roughly)
+    if (now.getMonth() >= 1 && now.getMonth() <= 5) {
+      currentSemester = 2;
+    } else {
+      currentSemester = 1;
+    }
+
+    const semester = req.query.semester ? parseInt(req.query.semester) : currentSemester;
+
+    // Backward compatibility: If querying Sem 1, found docs with no semester field too
+    const query = { groupId };
+    if (semester === 1) {
+      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      query.semester = semester;
+    }
+
+    const schedule = await WeeklySchedule.findOne(query)
       .populate("groupId", "name shift faculty")
       .populate("week.lessons.subjectId", "name")
       .populate("week.lessons.teacherId", "fullName")
@@ -38,6 +62,9 @@ export const getWeeklySchedule = async (req, res) => {
       .exec();
 
     if (!schedule) {
+      // Fallback: If requesting specific semester but not found, return 404
+      // But for backward compatibility, if semester wasn't explicitly requested, maybe try finding ANY schedule? 
+      // For now, let's keep it strict or user will be confused.
       return res.status(404).json({ message: "Ҷадвал ёфт нашуд" });
     }
 
@@ -51,21 +78,38 @@ export const getWeeklySchedule = async (req, res) => {
 // POST — Сабт / Навсозӣ
 export const saveWeeklySchedule = async (req, res) => {
   try {
-    const { groupId, week } = req.body;
+    const { groupId, week, semester } = req.body;
 
     if (!groupId || !week) {
       return res.status(400).json({ message: "groupId ва week лозим аст" });
     }
 
-    let schedule = await WeeklySchedule.findOne({ groupId });
+    // Default semester if not provided
+    let targetSemester = semester;
+    if (!targetSemester) {
+      const now = new Date();
+      if (now.getMonth() >= 1 && now.getMonth() <= 5) targetSemester = 2;
+      else targetSemester = 1;
+    }
+
+    // Backward compatibility find
+    const query = { groupId };
+    if (targetSemester === 1) {
+      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      query.semester = targetSemester;
+    }
+
+    let schedule = await WeeklySchedule.findOne(query);
 
     if (schedule) {
       // Навсозӣ
       schedule.week = week;
+      schedule.semester = targetSemester; // Ensure it's set
       await schedule.save();
     } else {
       // Эҷод
-      schedule = new WeeklySchedule({ groupId, week });
+      schedule = new WeeklySchedule({ groupId, week, semester: targetSemester });
       await schedule.save();
     }
 

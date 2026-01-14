@@ -22,6 +22,14 @@ const LessonSchema = new Schema({
     type: String,
     default: "",
   },
+  department: {
+    type: String, // Кафедра
+    default: "",
+  },
+  building: {
+    type: String, // Бино
+    default: "",
+  },
   lessonType: {
     type: String,
     enum: ["lecture", "practice", "lab"],
@@ -45,7 +53,11 @@ const WeeklyScheduleSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "Group",
       required: true,
-      unique: true, // як гурӯҳ — як ҷадвал
+    },
+    semester: {
+      type: Number,
+      required: true,
+      default: 1, // 1 ё 2
     },
     week: [DailyScheduleSchema],
   },
@@ -53,10 +65,9 @@ const WeeklyScheduleSchema = new Schema(
 );
 
 // Индекс барои тезтар кор кардан
-// Индекс барои тезтар кор кардан
-WeeklyScheduleSchema.index({ groupId: 1 });
-WeeklyScheduleSchema.index({ "week.day": 1 }); // Барои ҷустуҷӯ аз рӯи рӯз
-WeeklyScheduleSchema.index({ "week.lessons.teacherId": 1 }); // Барои муаллимон
+WeeklyScheduleSchema.index({ groupId: 1, semester: 1 }, { unique: true }); // Як гурӯҳ дар ҳар семестр танҳо як ҷадвал дорад
+WeeklyScheduleSchema.index({ "week.day": 1 });
+WeeklyScheduleSchema.index({ "week.lessons.teacherId": 1 });
 
 export default mongoose.models.WeeklySchedule ||
   mongoose.model("WeeklySchedule", WeeklyScheduleSchema);

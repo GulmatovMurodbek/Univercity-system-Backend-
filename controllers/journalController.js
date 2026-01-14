@@ -41,8 +41,21 @@ export const getJournalEntry = async (req, res) => {
     ][targetDate.getDay()];
     const lessonSlot = Number(slot);
 
-    // 1. Ҷадвали махсуси ҳамин гурӯҳро мегирем
-    const schedule = await WeeklySchedule.findOne({ groupId }).populate([
+    // 1. Determine semester based on date
+    let semester = 1;
+    if (targetDate.getMonth() >= 1 && targetDate.getMonth() <= 5) { // Feb-Jun
+      semester = 2;
+    }
+
+    // 2. Ҷадвали махсуси ҳамин гурӯҳро мегирем (бо назардошти семестр)
+    const query = { groupId: new mongoose.Types.ObjectId(groupId) };
+    if (semester === 1) {
+      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      query.semester = semester;
+    }
+
+    const schedule = await WeeklySchedule.findOne(query).populate([
       { path: "week.lessons.subjectId", select: "name" },
       { path: "week.lessons.teacherId", select: "fullName" },
     ]);
@@ -166,9 +179,25 @@ export const getLessonsByGroupAndDate = async (req, res) => {
     ];
     const dayOfWeekEn = daysEn[targetDate.getDay()];
 
-    const groupSchedule = await WeeklySchedule.findOne({
+    // Определить семестр по дате
+    let semester = 1;
+    if (targetDate.getMonth() >= 1 && targetDate.getMonth() <= 5) { // Feb-Jun
+      semester = 2;
+    }
+
+
+
+    const query = {
       groupId: new mongoose.Types.ObjectId(groupId),
-    })
+    };
+
+    if (semester === 1) {
+      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      query.semester = semester;
+    }
+
+    const groupSchedule = await WeeklySchedule.findOne(query)
       .populate({ path: "week.lessons.subjectId", select: "name" })
       .populate({ path: "week.lessons.teacherId", select: "fullName" });
 
@@ -310,16 +339,43 @@ export const getWeeklyAttendance = async (req, res) => {
 export const getWeeklyGrades = async (req, res) => {
   try {
     const { groupId } = req.params;
-    const { subjectId } = req.query;
+    const { subjectId, semester } = req.query; // Accept semester from query
 
     const currentYear = new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1;
-    const semesterStart = new Date(currentYear, 8, 1);
+    let semesterStart = new Date(currentYear, 8, 1);
     const today = new Date();
 
+    // 1. Determine Semester
+    let targetSemester = 1;
+
+    if (semester) {
+      targetSemester = Number(semester);
+    } else {
+      // Logic to auto-detect semester
+      const now = new Date();
+      if (now.getMonth() >= 1 && now.getMonth() <= 5) {
+        targetSemester = 2; // Feb-Jun
+      }
+    }
+
+    // 2. Adjust semesterStart based on targetSemester
+    // If Semester 1: Sep 1 of current academic year
+    // If Semester 2: Feb 1 of current academic year
+    if (targetSemester === 2) {
+      semesterStart = new Date(currentYear + 1, 1, 1); // Feb 1st
+    } else {
+      semesterStart = new Date(currentYear, 8, 1); // Sep 1st
+    }
+
+    // Query for Journals
     const query = {
       groupId,
-      date: { $gte: semesterStart, $lte: today },
+      date: { $gte: semesterStart }, // Fetch everything from semester start
     };
+    // Note: Removed $lte: today to ensure we see future grades if they exist (unlikely but safer), or keep it?
+    // User logic usually wants "up to now", but admin might want to see full range.
+    // Let's keep it bounded by Today or end of semester for correctness?
+    // Actually, simple $gte is enough for "current semester context".
 
     if (subjectId) {
       query.subjectId = subjectId;
@@ -337,7 +393,15 @@ export const getWeeklyGrades = async (req, res) => {
 
     if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
-    const schedule = await WeeklySchedule.findOne({ groupId }).populate("week.lessons.subjectId", "name _id").lean();
+    // Schedule Query Logic
+    const scheduleQuery = { groupId };
+    if (targetSemester === 1) {
+      scheduleQuery.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      scheduleQuery.semester = targetSemester;
+    }
+
+    const schedule = await WeeklySchedule.findOne(scheduleQuery).populate("week.lessons.subjectId", "name _id").lean();
 
     const subjectMap = new Map();
     if (schedule) {
@@ -497,25 +561,73 @@ export const getMyAttendance = async (req, res) => {
       return res.status(401).json({ message: "Донишҷӯ сабт нашудааст" });
     }
 
-    // Соли ҷорӣ барои семестр
-    const currentYear = new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1;
-    const semesterStart = new Date(currentYear, 8, 1);
-    const today = new Date();
+    // Semester logic (mirrors getMyGrades)
+    let { semester } = req.query;
+    const currentMonth = new Date().getMonth(); // 0=Jan, 11=Dec
+    const currentYear = new Date().getFullYear();
+
+    // Default semester if not provided
+    if (!semester) {
+      if (currentMonth >= 8 || currentMonth <= 0) semester = 1; // Sept-Jan -> Sem 1
+      else semester = 2; // Feb-Aug -> Sem 2
+    }
+    semester = parseInt(semester);
+
+    let semesterStart;
+    const isSecondSemester = semester === 2;
+
+    if (isSecondSemester) {
+      // Semester 2: Starts ~Feb 10
+      // If currently Jan-Aug, it's this year. If Sept-Dec, it implies next year (but usually we query for current/past).
+      // Assuming straightforward academic year:
+      // If today is late 2025 (Sem 1), asking for Sem 2 means Spring 2026.
+      // If today is Spring 2026 (Sem 2), asking for Sem 2 means Spring 2026.
+      // Simply: Logic from getMyGrades
+      if (currentMonth >= 8) {
+        // We are in Sem 1 (Autumn), Sem 2 is next year
+        semesterStart = new Date(currentYear + 1, 1, 10);
+      } else {
+        // We are in Sem 2 (Spring) or Summer, it's this year
+        semesterStart = new Date(currentYear, 1, 10);
+      }
+    } else {
+      // Semester 1: Starts Sept 1
+      if (currentMonth >= 0 && currentMonth < 8) {
+        // We are in Spring (Jan-Aug), Sem 1 was previous year
+        semesterStart = new Date(currentYear - 1, 8, 1);
+      } else {
+        // We are in Autumn (Sept-Dec), Sem 1 is this year
+        semesterStart = new Date(currentYear, 8, 1);
+      }
+    }
+
+    // Set end date boundary (for data fetching efficiency, though we loop 16 weeks fixedly)
+    // Actually, distinct from logic "up to today", usually we want to see the whole semester grid?
+    // User complaint: "calculating 20 weeks".
+    // Let's standardise to 16 weeks regardless of "today", but don't show future dates if not needed?
+    // MyGrades shows 16 weeks. Let's show 16 weeks here too.
+    const weeksLimit = 16;
+
+    // We fetch journals for the whole potential semester range
+    const semesterEnd = new Date(semesterStart);
+    semesterEnd.setDate(semesterStart.getDate() + (weeksLimit * 7));
 
     // Ҷустуҷӯ барои журналҳои донишҷӯ
     const journals = await JournalEntry.find({
-      "students.studentId": { $exists: true },
-      date: { $gte: semesterStart, $lte: today }
+      "students.studentId": { $exists: true }, // optimization: ensure student is in array? No, query inside student array
+      "students.studentId": studentId, // Better query
+      date: { $gte: semesterStart, $lte: semesterEnd }
     })
-      .select("date lessonSlot students.studentId students.attendance")
+      .select("date lessonSlot students.$") // Only fetch specific student from array? Mongoose syntax slightly complex.
+      // Simpler: fetch doc, filter in JS. Or "students.studentId": studentId
       .sort({ date: 1, lessonSlot: 1 });
 
-    // Ҳифзи ҳафтаҳо аз 1 сентябр
     const weeks = [];
     let currentWeekStart = new Date(semesterStart);
     let weekNumber = 1;
 
-    while (currentWeekStart <= today) {
+    // Loop exactly 16 weeks
+    while (weekNumber <= weeksLimit) {
       const weekEnd = new Date(currentWeekStart);
       weekEnd.setDate(currentWeekStart.getDate() + 6);
 
@@ -524,20 +636,27 @@ export const getMyAttendance = async (req, res) => {
         const dayDate = new Date(currentWeekStart);
         dayDate.setDate(currentWeekStart.getDate() + i);
 
-        if (dayDate > today) break;
-
+        // Filter journals for this day
+        // Note: Using JS filter since we fetched a range
         const dayJournals = journals.filter(j =>
-          getDushanbeDateString(j.date) === getDushanbeDateString(dayDate)
+          new Date(j.date).toDateString() === dayDate.toDateString()
         );
 
-        const lessons = Array(6).fill("—"); // пешфарзӣ
+        const lessons = Array(6).fill("—");
 
         dayJournals.forEach(j => {
-          const studentEntry = j.students.find(
-            s => s.studentId?.toString() === studentId
-          );
+          // Since we queried "students.studentId": studentId, the student SHOULD be there, 
+          // but if we didn't use projection `students.$`, we iterate.
+          // Earlier I changed find query to include studentId, but returned full docs.
+          const studentEntry = j.students.find(s => s.studentId?.toString() === studentId);
+
           if (studentEntry && j.lessonSlot >= 1 && j.lessonSlot <= 6) {
             const status = studentEntry.attendance;
+            const type = j.lessonType === "lecture" ? "Lec" :
+              j.lessonType === "lab" ? "Lab" : "Pr";
+
+            // For attendance, we usually just show Status (H/N/L)
+            // Maybe adding type hint is useful? For now keep simple status
             lessons[j.lessonSlot - 1] = status === "present" ? "H" :
               status === "absent" ? "N" :
                 status === "late" ? "L" : "—";
@@ -554,7 +673,7 @@ export const getMyAttendance = async (req, res) => {
       weeks.push({
         weekNumber,
         weekStart: format(currentWeekStart, "dd.MM.yyyy"),
-        weekEnd: format(weekEnd > today ? today : weekEnd, "dd.MM.yyyy"),
+        weekEnd: format(weekEnd, "dd.MM.yyyy"),
         days
       });
 
@@ -602,47 +721,79 @@ export const getMyGrades = async (req, res) => {
     const groupId = group._id;
 
     // 2) Ҷадвали ҳафтаинаи гурӯҳ
-    const schedule = await WeeklySchedule.findOne({ groupId })
-      .populate("week.lessons.subjectId", "name _id")
-      .lean();
-
+    // 2) Ҷадвали ҳафтаинаи гурӯҳ
+    // 2) Ҷадвали ҳафтаинаи гурӯҳ
     const now = new Date();
     const currentYear = now.getFullYear();
+    const { semester } = req.query; // Accept semester from query
 
-    /**
-     * Муайян кардани семестр:
-     * Sem 1: аз 1 сентябр то 21 декабр
-     * Istogah: 22 декабр - 31 январ (то ҳол Sem 1 ҳисоб мешавад)
-     * Sem 2: аз 1 феврал
-     */
+    let targetSemester = 1;
     let semesterStart;
     let isSecondSemester = false;
 
-    if (now.getMonth() + 1 === 12 && now.getDate() >= 22) {
-      // Аз 22 декабр — истгоҳ → ҳанӯз Semester 1
-      isSecondSemester = false;
-      semesterStart = new Date(currentYear, 8, 1); // 1 сентябр
-    } else if (now.getMonth() === 0) {
-      // январ → истгоҳ → ҳанӯз Semester 1 (оғози соли гузашта)
-      isSecondSemester = false;
-      semesterStart = new Date(currentYear - 1, 8, 1);
-    } else if (now.getMonth() + 1 >= 2) {
-      // феврал ё баъд → Semester 2
-      isSecondSemester = true;
-      semesterStart = new Date(currentYear, 1, 1); // 1 феврал
+    // Determine target based on query OR date
+    if (semester) {
+      targetSemester = Number(semester);
     } else {
-      // сентябр то 21 декабр
-      isSecondSemester = false;
-      const startYear = now.getMonth() + 1 >= 9 ? currentYear : currentYear - 1;
-      semesterStart = new Date(startYear, 8, 1);
+      // Logic to auto-detect semester
+      if (now.getMonth() + 1 === 12 && now.getDate() >= 22) { // Late Dec
+        targetSemester = 1;
+      } else if (now.getMonth() === 0) { // Jan
+        targetSemester = 1;
+      } else if (now.getMonth() + 1 >= 2 && now.getMonth() + 1 <= 6) { // Feb-Jun
+        targetSemester = 2;
+      } else {
+        targetSemester = 1; // Default/Sep-Dec
+      }
     }
+
+    // Set dates based on targetSemester
+    if (targetSemester === 2) {
+      isSecondSemester = true;
+      // If current month is before Feb (e.g. looking ahead) or way after, guess year?
+      // Usually we look at current academic year.
+      // Implementation Detail: if it's Jan 2026, Sem 2 starts Feb 2026.
+      // If it's Sep 2025, Sem 2 starts Feb 2026.
+      // If currently Sep-Dec (Sem 1), showing Sem 2 is "future".
+      // If currently Feb-Jun (Sem 2), showing Sem 1 is "past" (Sep prev year).
+
+      // ROBUST YEAR LOGIC:
+      // Academic Year is defined by "Sep of Year X" to "Jun of Year X+1".
+      // If now is Sep-Dec 2025 -> Academic Year Start is 2025. Sem 2 is 2026.
+      // If now is Jan-Jun 2026 -> Academic Year Start is 2025. Sem 2 is 2026.
+
+      const academicYearStart = (now.getMonth() >= 8) ? currentYear : currentYear - 1;
+      semesterStart = new Date(academicYearStart + 1, 1, 1); // Feb 1st of next year
+    } else {
+      isSecondSemester = false;
+      const academicYearStart = (now.getMonth() >= 8) ? currentYear : currentYear - 1;
+      semesterStart = new Date(academicYearStart, 8, 1); // Sep 1st
+    }
+
+    // Override manual logic with explicit calculation
+    // ...
+
+    const scheduleQuery = { groupId };
+    if (targetSemester === 1) {
+      scheduleQuery.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      scheduleQuery.semester = targetSemester;
+    }
+
+    const schedule = await WeeklySchedule.findOne(scheduleQuery)
+      .populate("week.lessons.subjectId", "name _id")
+      .lean();
+
+    // Logic moved up
 
     const today = new Date();
 
     // 3) JournalEntry-ҳо (фақат дар ҳамин семестр ва барои ҳамин student)
+    // IMPORTANT: Remove $lte: today to allow viewing full semester (even future if exists, though unlikely)
+    // or just to avoid bug where "today" cuts off valid evening grades.
     const journals = await JournalEntry.find({
       "students.studentId": studentId,
-      date: { $gte: semesterStart, $lte: today },
+      date: { $gte: semesterStart },
     })
       .populate("subjectId", "name _id")
       .select("date lessonSlot subjectId lessonType students.studentId students.taskGrade students.preparationGrade")
@@ -704,6 +855,7 @@ export const getMyGrades = async (req, res) => {
               lessons[index] = {
                 grade: "—",
                 subject: lesson.subjectId.name || "—",
+                lessonType: lesson.lessonType || "practice", // Capture type
               };
             }
           });
@@ -735,12 +887,22 @@ export const getMyGrades = async (req, res) => {
             ) {
               lessons[j.lessonSlot - 1].subject = j.subjectId.name;
             }
+            // Update type from journal if available
+            if (j.lessonType) {
+              lessons[j.lessonSlot - 1].lessonType = j.lessonType;
+            }
           }
         });
 
-        // Агар дар schedule фан ҳаст, аммо баҳо нест -> 0
+        // Агар дар schedule фан ҳаст, аммо баҳо нест -> 0 (ФАҚАТ АГАР ЛЕКЦИЯ НАБОШАД)
         lessons.forEach((l) => {
-          if (l.subject !== "—" && l.grade === "—") l.grade = "0";
+          if (l.subject !== "—" && l.grade === "—") {
+            if (l.lessonType !== "lecture") {
+              l.grade = "0";
+            } else {
+              l.grade = "—"; // Explicitly keep as dash for lectures
+            }
+          }
         });
 
         days.push({
