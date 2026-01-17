@@ -250,16 +250,48 @@ export const getWeeklyAttendance = async (req, res) => {
   try {
     const { groupId } = req.params;
     const weekParam = parseInt(req.query.week);
+    const semesterParam = parseInt(req.query.semester);
 
-    // 1 сентябри соли ҷорӣ (агар сентябр гузашта бошад — соли гузашта)
-    const currentYear = new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1;
-    const semesterStart = new Date(currentYear, 8, 1); // 1 сентябр
+    // 1. Determine Academic Year Start (Sep 1 of current academic cycle)
+    // If today is Sept-Dec, academic year starts this year.
+    // If today is Jan-Aug, academic year started previous year.
+    const now = new Date();
+    const currentYear = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+    
+    // 2. Determine Semester and Semester Start Date
+    let semester = semesterParam;
+    if (!semester) {
+       // Auto-detect if not provided
+       semester = (now.getMonth() >= 1 && now.getMonth() <= 5) ? 2 : 1;
+    }
 
-    const weekNumber = weekParam || Math.max(1, Math.ceil((new Date().getTime() - semesterStart.getTime()) / (7 * 24 * 60 * 60 * 1000)));
+    let semesterStart;
+    if (semester === 2) {
+      semesterStart = new Date(currentYear + 1, 1, 1); // 1 Феврал
+    } else {
+      semesterStart = new Date(currentYear, 8, 1); // 1 Сентябр
+    }
 
-    // Ҳафтаи интихобшуда
+    // 3. Determine Week Number
+    // If week is provided, use it. If not, calculate current week relative to semesterStart (if we are in that semester)
+    let weekNumber = weekParam;
+    if (!weekNumber) {
+        const diffTime = Math.abs(now.getTime() - semesterStart.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+        weekNumber = Math.ceil(diffDays / 7);
+        if (weekNumber < 1) weekNumber = 1;
+    }
+
+    // 4. Calculate Week Start and End Dates based on Week Number
     const weekStart = new Date(semesterStart);
     weekStart.setDate(semesterStart.getDate() + (weekNumber - 1) * 7);
+    
+    // Adjust to Monday if needed? The original code simply added 0..6 days to weekStart.
+    // Original logic: "1 сентябр" is fixed anchor. 
+    // If Sep 1 is Friday, then Week 1 starts Friday? 
+    // Usually weeks should align with Monday. 
+    // The current logic just calculates pure 7-day chunks from Sep 1. Let's stick to that for consistency unless requested otherwise.
+    
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekStart.getDate() + 6);
 
@@ -274,7 +306,10 @@ export const getWeeklyAttendance = async (req, res) => {
     const group = await Group.findById(groupId).populate("students");
     if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
-    // 6 рӯз: Душанбе то Шанбе
+    // 6 рӯз: Душанбе то Шанбе. 
+    // We want to display Mon-Sat relative to the week. 
+    // However, if we just add days to weekStart, we get whatever days they are.
+    // Let's assume the system works with this "7 day window" logic.
     const days = [];
     for (let i = 0; i < 6; i++) {
       const date = new Date(weekStart);
@@ -306,7 +341,6 @@ export const getWeeklyAttendance = async (req, res) => {
     });
 
     // Пур кардани маълумотҳо
-    // Iterate days, look up journals in Map (O(1)) instead of array find
     days.forEach((day, dayIndex) => {
       const dKey = getDushanbeDateString(day.fullDate);
       const dayJournals = journalMap.get(dKey);
@@ -326,6 +360,7 @@ export const getWeeklyAttendance = async (req, res) => {
     res.json({
       groupName: group.name,
       weekNumber,
+      semester,
       weekStart: format(weekStart, "dd.MM.yyyy"),
       weekEnd: format(weekEnd, "dd.MM.yyyy"),
       days: days.map(d => ({ date: d.date, weekday: d.weekday })),

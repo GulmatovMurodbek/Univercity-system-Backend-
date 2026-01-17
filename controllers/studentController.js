@@ -62,8 +62,29 @@ export const addStudent = async (req, res) => {
 // ✨ Get all students
 export const getStudents = async (req, res) => {
   try {
-    const students = await Student.find();
-    res.json(students);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || "";
+    const skip = (page - 1) * limit;
+
+    const query = {};
+    if (search) {
+      query.fullName = { $regex: search, $options: "i" };
+    }
+
+    const total = await Student.countDocuments(query);
+    const students = await Student.find(query)
+      .populate("group", "name") // Populate group name
+      .sort({ createdAt: -1 }) // Newest first
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      students,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
