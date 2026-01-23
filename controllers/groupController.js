@@ -126,3 +126,27 @@ export const addStudentToGroup = async (req, res) => {
   }
 };
 
+// 🗑️ Remove student from group
+export const removeStudentFromGroup = async (req, res) => {
+  try {
+    const { groupId, studentId } = req.body;
+
+    const group = await Group.findById(groupId);
+    if (!group) return res.status(404).json({ message: "Group not found!" });
+
+    // Remove student using $pull
+    const updatedGroup = await Group.findByIdAndUpdate(
+      groupId,
+      {
+        $pull: { students: studentId },
+        $inc: { studentCount: -1 }
+      },
+      { new: true }
+    );
+
+    res.json({ message: "Student removed from group!", group: updatedGroup });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+

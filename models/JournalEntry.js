@@ -28,6 +28,7 @@ const journalEntrySchema = new Schema(
       enum: ["lecture", "practice", "lab"],
       default: "practice"
     },
+    topic: { type: String, default: "" },
     students: [studentRecordSchema]
   },
   { timestamps: true }

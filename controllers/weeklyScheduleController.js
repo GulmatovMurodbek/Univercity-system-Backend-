@@ -153,10 +153,28 @@ export const getMyTeachingSchedule = async (req, res) => {
   try {
     const teacherId = req.user.id; // аз JWT token
 
-    // Ҳамаи ҷадвалҳо, ки муаллим дар онҳо ҳаст
-    const schedules = await WeeklySchedule.find({
-      "week.lessons.teacherId": teacherId,
-    })
+    // Determine current semester
+    const now = new Date();
+    let currentSemester = 1;
+    // Feb (1) - Jun (5) -> Sem 2
+    if (now.getMonth() >= 1 && now.getMonth() <= 5) {
+      currentSemester = 2;
+    }
+
+    // Build query to match teacher AND current semester
+    const query = {
+      "week.lessons.teacherId": teacherId
+    };
+
+    if (currentSemester === 1) {
+      // Semester 1 OR missing semester field (legacy)
+      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      query.semester = 2;
+    }
+
+    // Ҳамаи ҷадвалҳо, ки муаллим дар онҳо ҳаст (Current Semester only)
+    const schedules = await WeeklySchedule.find(query)
       .populate("groupId", "name shift")
       .populate("week.lessons.subjectId", "name")
       .lean();

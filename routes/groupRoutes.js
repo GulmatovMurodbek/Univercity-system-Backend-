@@ -6,6 +6,7 @@ import {
   editGroup,
   deleteGroup,
   addStudentToGroup,
+  removeStudentFromGroup,
 } from "../controllers/groupController.js";
 
 const router = express.Router();
@@ -27,4 +28,8 @@ router.delete("/:id", deleteGroup);
 
 // ➕ Add student to group
 router.post("/add-student", addStudentToGroup);
+
+// 🗑️ Remove student from group
+router.delete("/remove-student", removeStudentFromGroup);
+
 export default router;

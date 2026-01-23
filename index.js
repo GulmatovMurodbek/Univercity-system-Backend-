@@ -11,6 +11,8 @@ import groupRoutes from "./routes/groupRoutes.js"
 import subjectRoutes from "./routes/subjectRoutes.js"
 import weeklyScheduleRoutes from "./routes/weeklyScheduleRoutes.js"
 import journalRoutes from "./routes/journalRoutes.js"
+import analyticsRoutes from "./routes/analyticsRoutes.js"
+import logRoutes from "./routes/logRoutes.js"
 dotenv.config();
 const app = express();
 
@@ -33,4 +35,7 @@ app.use("/api/admins", adminRoutes);
 app.use("/api/subjects", subjectRoutes)
 app.use("/api/weeklySchedule", weeklyScheduleRoutes)
 app.use('/api/journal', journalRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/logs', logRoutes);
+
 app.listen(5000, () => console.log("Server running on port 5000"));

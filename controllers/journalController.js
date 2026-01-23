@@ -5,6 +5,7 @@ import Group from "../models/Groups.js";
 import mongoose from "mongoose";
 import { format } from "date-fns";
 import { ru } from "date-fns/locale";
+import { createLog } from "./logController.js";
 
 // Helper: Санаро ҳамеша ба вақти Душанбе (Asia/Dushanbe) табдил медиҳем
 // Create formatter once to reuse (Performance optimization)
@@ -130,7 +131,7 @@ export const getJournalEntry = async (req, res) => {
 export const updateJournalEntry = async (req, res) => {
   try {
     const { id } = req.params;
-    const { students } = req.body;
+    const { students, topic } = req.body;
     const currentUserId = req.user.id;
     const currentUserRole = req.user.role;
 
@@ -142,6 +143,28 @@ export const updateJournalEntry = async (req, res) => {
     if (currentUserRole !== "admin" && journal.teacherId.toString() !== currentUserId) {
       return res.status(403).json({ message: "Дастрасӣ манъ аст" });
     }
+
+    // Update topic if provided
+    if (topic !== undefined) {
+      journal.topic = topic;
+    }
+
+    // Check for changes to log (Optimization: only log if something changed)
+    // For simplicity, we log that "Grades/Attendance updated"
+    // Ideally we would compare oldJournal vs newJournal students
+
+    // Log the action
+    await createLog(
+      "UPDATE_JOURNAL",
+      currentUserId,
+      currentUserRole,
+      {
+        journalId: id,
+        groupId: journal.groupId,
+        subjectId: journal.subjectId,
+        date: journal.date
+      }
+    );
 
     journal.students = students;
     journal.markModified("students");
@@ -257,12 +280,12 @@ export const getWeeklyAttendance = async (req, res) => {
     // If today is Jan-Aug, academic year started previous year.
     const now = new Date();
     const currentYear = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
-    
+
     // 2. Determine Semester and Semester Start Date
     let semester = semesterParam;
     if (!semester) {
-       // Auto-detect if not provided
-       semester = (now.getMonth() >= 1 && now.getMonth() <= 5) ? 2 : 1;
+      // Auto-detect if not provided
+      semester = (now.getMonth() >= 1 && now.getMonth() <= 5) ? 2 : 1;
     }
 
     let semesterStart;
@@ -276,22 +299,22 @@ export const getWeeklyAttendance = async (req, res) => {
     // If week is provided, use it. If not, calculate current week relative to semesterStart (if we are in that semester)
     let weekNumber = weekParam;
     if (!weekNumber) {
-        const diffTime = Math.abs(now.getTime() - semesterStart.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-        weekNumber = Math.ceil(diffDays / 7);
-        if (weekNumber < 1) weekNumber = 1;
+      const diffTime = Math.abs(now.getTime() - semesterStart.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      weekNumber = Math.ceil(diffDays / 7);
+      if (weekNumber < 1) weekNumber = 1;
     }
 
     // 4. Calculate Week Start and End Dates based on Week Number
     const weekStart = new Date(semesterStart);
     weekStart.setDate(semesterStart.getDate() + (weekNumber - 1) * 7);
-    
+
     // Adjust to Monday if needed? The original code simply added 0..6 days to weekStart.
     // Original logic: "1 сентябр" is fixed anchor. 
     // If Sep 1 is Friday, then Week 1 starts Friday? 
     // Usually weeks should align with Monday. 
     // The current logic just calculates pure 7-day chunks from Sep 1. Let's stick to that for consistency unless requested otherwise.
-    
+
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekStart.getDate() + 6);
 
@@ -307,18 +330,28 @@ export const getWeeklyAttendance = async (req, res) => {
     if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
     // 6 рӯз: Душанбе то Шанбе. 
-    // We want to display Mon-Sat relative to the week. 
-    // However, if we just add days to weekStart, we get whatever days they are.
-    // Let's assume the system works with this "7 day window" logic.
     const days = [];
-    for (let i = 0; i < 6; i++) {
-      const date = new Date(weekStart);
-      date.setDate(weekStart.getDate() + i);
-      days.push({
-        date: format(date, "dd.MM"),
-        weekday: format(date, "EEEE", { locale: ru }),
-        fullDate: date
-      });
+    let currentDayIter = new Date(weekStart);
+
+    // Loop until we have 6 days OR we exceed a reasonable range (e.g. 2 weeks safety)
+    while (days.length < 6) {
+      // Create independent date object
+      const dateToCheck = new Date(currentDayIter);
+
+      // Skip Sunday (0)
+      if (dateToCheck.getDay() !== 0) {
+        days.push({
+          date: format(dateToCheck, "dd.MM"),
+          weekday: format(dateToCheck, "EEEE", { locale: ru }),
+          fullDate: dateToCheck // Store full date object for matching
+        });
+      }
+
+      // Move to next day
+      currentDayIter.setDate(currentDayIter.getDate() + 1);
+
+      // Safety break to prevent infinite loop if weird logic
+      if (Math.abs((currentDayIter - weekStart) / (1000 * 60 * 60 * 24)) > 14) break;
     }
 
     // Ҳар донишҷӯ — 6 рӯз × 6 дарс
@@ -328,7 +361,7 @@ export const getWeeklyAttendance = async (req, res) => {
       attendance: days.map(day => ({
         date: day.date,
         weekday: day.weekday,
-        lessons: Array(6).fill(null).map(() => null) // L1 to L6
+        lessons: Array(6).fill(null).map(() => null) // L1 to L6, initialized to null
       }))
     }));
 
@@ -342,7 +375,7 @@ export const getWeeklyAttendance = async (req, res) => {
 
     // Пур кардани маълумотҳо
     days.forEach((day, dayIndex) => {
-      const dKey = getDushanbeDateString(day.fullDate);
+      const dKey = getDushanbeDateString(day.fullDate); // Use the Full Date object stored in day
       const dayJournals = journalMap.get(dKey);
 
       if (dayJournals) {
