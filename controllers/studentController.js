@@ -63,13 +63,23 @@ export const addStudent = async (req, res) => {
 export const getStudents = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || "";
+    // If searching, default to 50, otherwise 10 to show more results in dropdowns
+    const defaultLimit = search ? 50 : 10;
+    const limit = parseInt(req.query.limit) || defaultLimit;
     const skip = (page - 1) * limit;
 
     const query = {};
     if (search) {
-      query.fullName = { $regex: search, $options: "i" };
+      const isObjectId = mongoose.Types.ObjectId.isValid(search);
+      const searchRegex = { $regex: search, $options: "i" };
+      query.$or = [
+        { fullName: searchRegex },
+        { email: searchRegex }
+      ];
+      if (isObjectId) {
+        query.$or.push({ _id: search });
+      }
     }
 
     const total = await Student.countDocuments(query);

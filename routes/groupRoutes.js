@@ -23,13 +23,13 @@ router.get("/:id", getGroupById);
 // ✏️ Edit group
 router.put("/:id", editGroup);
 
-// ❌ Delete group
-router.delete("/:id", deleteGroup);
+// 🗑️ Remove student from group
+router.delete("/remove-student", removeStudentFromGroup);
 
 // ➕ Add student to group
 router.post("/add-student", addStudentToGroup);
 
-// 🗑️ Remove student from group
-router.delete("/remove-student", removeStudentFromGroup);
+// ❌ Delete group
+router.delete("/:id", deleteGroup);
 
 export default router;

@@ -1,7 +1,9 @@
 import Groups from "../models/Groups.js";
 import Group from "../models/Groups.js";
 import Student from "../models/Student.js";
+import Request from "express"; // Not used but preserving structure if needed, or just insert mongoose
 import WeeklySchedule from "../models/WeeklySchedule.js";
+import mongoose from "mongoose";
 
 // ➕ Add new group
 export const addGroup = async (req, res) => {
@@ -94,7 +96,11 @@ export const deleteGroup = async (req, res) => {
 // ➕ Add student to group
 export const addStudentToGroup = async (req, res) => {
   try {
-    const { groupId, studentId } = req.body; // studentId = array
+    const { groupId, studentId } = req.body; // studentId = array of strings
+
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res.status(400).json({ message: "Invalid Group ID" });
+    }
 
     const group = await Group.findById(groupId);
     if (!group) {
@@ -106,22 +112,44 @@ export const addStudentToGroup = async (req, res) => {
       return res.status(400).json({ message: "studentId must be an array" });
     }
 
+    // Filter valid IDs only
+    const validStudentIds = studentId.filter(id => mongoose.Types.ObjectId.isValid(id));
+
+    if (validStudentIds.length === 0 && studentId.length > 0) {
+      return res.status(400).json({ message: "No valid student IDs provided" });
+    }
+
     // Илова кардани студентҳо бе такрор
-    studentId.forEach(id => {
-      if (!group.students.includes(id)) {
+    // Convert current students to strings for comparison
+    const currentStudentIds = group.students.map(s => s.toString());
+
+    let addedCount = 0;
+    validStudentIds.forEach(id => {
+      if (!currentStudentIds.includes(id)) {
         group.students.push(id);
+        currentStudentIds.push(id); // Prevent adding same ID twice in this batch if duplicate in input
+        addedCount++;
       }
     });
 
-    group.studentCount = group.students.length;
-    await group.save();
+    if (addedCount > 0) {
+      group.studentCount = group.students.length;
+
+      // 🛠️ Auto-fix: Ensure 'id' exists before saving
+      if (!group.id) {
+        group.id = group._id.toString();
+      }
+
+      await group.save();
+    }
 
     res.json({
-      message: "Students added to group!",
+      message: `Successfully added ${addedCount} students!`,
       group
     });
 
   } catch (err) {
+    console.error("Error adding student to group:", err);
     res.status(500).json({ error: err.message });
   }
 };
