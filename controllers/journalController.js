@@ -653,10 +653,10 @@ export const getMyAttendance = async (req, res) => {
       // Simply: Logic from getMyGrades
       if (currentMonth >= 8) {
         // We are in Sem 1 (Autumn), Sem 2 is next year
-        semesterStart = new Date(currentYear + 1, 1, 10);
+        semesterStart = new Date(currentYear + 1, 1, 2);
       } else {
         // We are in Sem 2 (Spring) or Summer, it's this year
-        semesterStart = new Date(currentYear, 1, 10);
+        semesterStart = new Date(currentYear, 1, 2);
       }
     } else {
       // Semester 1: Starts Sept 1
