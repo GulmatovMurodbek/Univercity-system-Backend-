@@ -430,7 +430,7 @@ export const getWeeklyGrades = async (req, res) => {
     // If Semester 1: Sep 1 of current academic year
     // If Semester 2: Feb 1 of current academic year
     if (targetSemester === 2) {
-      semesterStart = new Date(currentYear + 1, 1, 1); // Feb 1st
+      semesterStart = new Date(currentYear + 1, 1, 2); // Feb 2nd
     } else {
       semesterStart = new Date(currentYear, 8, 1); // Sep 1st
     }
@@ -520,12 +520,12 @@ export const getWeeklyGrades = async (req, res) => {
     let currentWeekStart = new Date(semesterStart);
     let weekNum = 1;
 
-    while (currentWeekStart <= today && weekNum <= 16) {
+    while (weekNum <= 16) {
       const days = [];
       for (let i = 0; i < 6; i++) {
         const date = new Date(currentWeekStart);
         date.setDate(currentWeekStart.getDate() + i);
-        if (date > today) break;
+        if (false) break; // Allow future dates
 
         const dateStr = getDushanbeDateString(date);
         const dayOfWeek = daysEn[date.getDay()];
