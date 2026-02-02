@@ -850,11 +850,153 @@ export const getMyAttendance = async (req, res) => {
     const rate = total > 0 ? Math.round((present / total) * 100) : 0;
 
     res.json({
+      studentId: studentId,
+      semester,
       weeks,
-      stats: { total, present, absent: total - present, rate }
     });
   } catch (err) {
     console.error("getMyAttendance error:", err);
+    res.status(500).json({ message: "Хатогӣ дар сервер" });
+  }
+};
+
+// GET — Рӯйхати дарсҳое, ки журнал надоранд (барои як рӯзи мушаххас)
+
+// GET — Рӯйхати дарсҳое, ки журнал надоранд (барои як рӯзи мушаххас)
+export const getMissingAttendance = async (req, res) => {
+  try {
+    const { date } = req.query;
+
+    // 1. Determine Date
+    const targetDate = date ? new Date(date) : new Date();
+    if (isNaN(targetDate.getTime())) {
+      return res.status(400).json({ message: "Санаи нодуруст" });
+    }
+
+    // Determine Day of Week
+    const daysEn = [
+      "Sunday",
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+    ];
+    const dayOfWeekEn = daysEn[targetDate.getDay()];
+
+    // 2. Determine Semester
+    let semester = 1;
+    if (targetDate.getMonth() >= 1 && targetDate.getMonth() <= 5) {
+      semester = 2;
+    }
+
+    // 3. Find All SCHEDULES
+    const query = {};
+    if (semester === 1) {
+      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      query.semester = semester;
+    }
+    query["week.day"] = dayOfWeekEn;
+
+    const schedules = await WeeklySchedule.find(query)
+      .populate("groupId", "name shift")
+      .populate("week.lessons.subjectId", "name")
+      .populate("week.lessons.teacherId", "fullName")
+      .lean();
+
+    // 4. BULK FETCH: Get all journals for this date
+    // Normalize date range
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const existingJournals = await JournalEntry.find({
+      date: { $gte: startOfDay, $lte: endOfDay }
+    })
+      .select("groupId subjectId lessonSlot")
+      .lean();
+
+    // Create a Set for fast lookup: "groupId_subjectId_slot"
+    const journalSet = new Set();
+    existingJournals.forEach(j => {
+      if (j.groupId && j.subjectId) {
+        journalSet.add(`${j.groupId.toString()}_${j.subjectId.toString()}_${j.lessonSlot}`);
+      }
+    });
+
+    const missingEntries = [];
+
+    // 5. Iterate and Check (In-Memory)
+    for (const schedule of schedules) {
+      const dayData = schedule.week.find((d) => d.day === dayOfWeekEn);
+      if (!dayData || !dayData.lessons) continue;
+
+      for (let i = 0; i < dayData.lessons.length; i++) {
+        const lesson = dayData.lessons[i];
+
+        // Basic Validations
+        if (!lesson.subjectId || !lesson.teacherId) continue;
+
+        const subjectName = (lesson.subjectId && lesson.subjectId.name) ? lesson.subjectId.name : "";
+        const groupName = (schedule.groupId && schedule.groupId.name) ? schedule.groupId.name : "";
+        const teacherName = (lesson.teacherId && lesson.teacherId.fullName) ? lesson.teacherId.fullName : "";
+
+        const lowerSubject = subjectName.toLowerCase();
+        const lowerGroup = groupName.toLowerCase();
+        const lowerTeacher = teacherName.toLowerCase();
+
+        // --- FILTERS ---
+        // 1. Exclude Military Department (Variable spellings)
+        // Checks: ҳарбӣ, харби, harbi, military, военн
+        if (
+          lowerSubject.includes("ҳарби") || lowerSubject.includes("harbi") || lowerSubject.includes("харби") || lowerSubject.includes("военн") ||
+          lowerGroup.includes("ҳарби") || lowerGroup.includes("harbi") || lowerGroup.includes("харби") || lowerGroup.includes("военн") ||
+          lowerTeacher.includes("ҳарби") || lowerTeacher.includes("harbi") || lowerTeacher.includes("харби") || lowerTeacher.includes("военн")
+        ) {
+          continue;
+        }
+
+        // 2. Exclude Empty/Window
+        if (lowerSubject.includes("window") || lowerSubject.includes("empty") || lowerSubject.includes("холи")) continue;
+
+        const slot = i + 1;
+
+        // Shift Logic
+
+        const timeStart = lesson.time.split(" - ")[0] || "";
+        const hour = parseInt(timeStart.split(":")[0], 10);
+        let shift = 1;
+        if (hour >= 14) shift = 2;
+        else if (hour === 13) shift = schedule.groupId.shift === 2 ? 2 : 1;
+        else shift = 1;
+
+        // CHECK EXISTENCE IN SET
+        // Key: groupId_subjectId_slot
+        const key = `${schedule.groupId._id.toString()}_${lesson.subjectId._id.toString()}_${slot}`;
+
+        if (!journalSet.has(key)) {
+          missingEntries.push({
+            group: schedule.groupId.name,
+            teacher: lesson.teacherId.fullName,
+            subject: subjectName,
+            time: lesson.time,
+            slot: slot,
+            shift: shift
+          });
+        }
+      }
+    }
+
+    res.json({
+      date: format(targetDate, "dd.MM.yyyy"),
+      count: missingEntries.length,
+      missing: missingEntries
+    });
+  } catch (err) {
+    console.error("getMissingAttendance error:", err);
     res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };
