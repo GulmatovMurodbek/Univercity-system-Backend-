@@ -5,6 +5,6 @@ import { auth } from "../middleware/auth.js";
 const router = express.Router();
 
 // 🔒 Protected route (Admin only)
-router.get("/", auth(['admin']), getLogs);
+router.get("/", auth(["admin", "mudir"]), getLogs);
 
 export default router;

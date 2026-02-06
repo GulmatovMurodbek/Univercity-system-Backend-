@@ -1,6 +1,7 @@
 // controllers/scheduleController.js
 
 import WeeklySchedule from "../models/WeeklySchedule.js";
+import JournalEntry from "../models/JournalEntry.js";
 
 // GET — гирифтани ҷадвал барои гурӯҳ
 export const getWeeklySchedule = async (req, res) => {
@@ -194,10 +195,28 @@ export const getMyTeachingSchedule = async (req, res) => {
     let totalHours = 0;
     const todayLessons = [];
 
-    // Рӯзи ҷорӣ барои todayLessons
-    const today = new Date();
+    // Рӯзи дархостшуда (ё имрӯз)
+    // Supports ?date=YYYY-MM-DD
+    const targetDate = req.query.date ? new Date(req.query.date) : new Date();
+
+    // Reset time to start of day for accurate Date comparison
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
     const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const currentDayName = daysOfWeek[today.getDay()];
+    const currentDayName = daysOfWeek[targetDate.getDay()];
+
+    // Get all journal entries for the target date for this teacher to check "isHeld"
+    const todayJournals = await JournalEntry.find({
+      teacherId,
+      date: {
+        $gte: startOfDay,
+        $lte: endOfDay
+      }
+    }).lean();
 
     schedules.forEach((schedule) => {
       const groupInfo = {
@@ -219,19 +238,42 @@ export const getMyTeachingSchedule = async (req, res) => {
 
             // Агар рӯзи имрӯз бошад — ба todayLessons илова мекунем
             if (day.day === currentDayName) {
+              const lessonSlot = day.lessons.indexOf(lesson) + 1;
+
+              // Check if journal exists for this specific lesson
+              // criteria: groupId, subjectId, shift, slot (and date/teacher which we filtered by)
+              const isHeld = todayJournals.some(j =>
+                j.groupId.toString() === schedule.groupId._id.toString() &&
+                j.subjectId.toString() === lesson.subjectId._id.toString() &&
+                j.lessonSlot === lessonSlot &&
+                // shift check might be tricky if not stored on lesson explicitly, but usually schedule.groupId.shift
+                // let's assume schedule.groupId.shift maps to journal shift 
+                // (journal shift is 1 or 2, schedule shift might be "1" or "2" string)
+                Number(j.shift) === Number(schedule.groupId.shift) &&
+                j.isSubmitted === true
+              );
+
               todayLessons.push({
-                lessonNumber: day.lessons.indexOf(lesson) + 1,
+                lessonNumber: lessonSlot,
                 time: lesson.time || "Номуайян",
                 subject: lesson.subjectId?.name || "—",
+                subjectId: lesson.subjectId?._id,
                 group: schedule.groupId.name,
+                groupId: schedule.groupId._id,
+                shift: schedule.groupId.shift,
                 classroom: lesson.classroom || "—",
-                isCurrent: false, // метавонӣ бо вақти ҷорӣ ҳисоб кунӣ
+                lessonType: lesson.lessonType || "lecture", // Default to lecture
+                isHeld: isHeld,
+                isCurrent: false, // frontend handles this or we can do it here
               });
             }
           }
         });
       });
     });
+
+    // Sort todayLessons by lessonNumber
+    todayLessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
 
     // Натиҷа
     res.json({

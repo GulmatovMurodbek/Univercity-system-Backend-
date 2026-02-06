@@ -2,7 +2,7 @@ import Teacher from "../models/Teacher.js";
 
 export const addTeacher = async (req, res) => {
   try {
-    const { fullName, email, password, phone, dateOfBirth, subjects } = req.body;
+    const { fullName, email, password, phone, dateOfBirth, subjects, isDean } = req.body;
 
     if (!fullName || !email || !password) {
       return res.status(400).json({ message: "FullName, email and password are required!" });
@@ -18,6 +18,7 @@ export const addTeacher = async (req, res) => {
       phone,
       dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
       subjects: subjects || [],
+      isDean: isDean || false,
     });
 
     res.status(201).json({ message: "Teacher added!", teacher });

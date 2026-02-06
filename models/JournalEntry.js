@@ -12,7 +12,6 @@ const studentRecordSchema = new Schema({
   },
   preparationGrade: { type: Number, min: 0, max: 5, default: null },
   taskGrade: { type: Number, min: 0, max: 5, default: null },
-  notes: { type: String, default: "" }
 });
 
 const journalEntrySchema = new Schema(
@@ -29,6 +28,7 @@ const journalEntrySchema = new Schema(
       default: "practice"
     },
     topic: { type: String, default: "" },
+    isSubmitted: { type: Boolean, default: false },
     students: [studentRecordSchema]
   },
   { timestamps: true }

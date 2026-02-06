@@ -6,9 +6,9 @@ const router = express.Router();
 
 // Apply checking for admin role for all teacher operations
 router.post("/", auth(["admin"]), addTeacher);
-router.get("/", auth(["admin"]), getTeachers);
+router.get("/", auth(["admin", "teacher"]), getTeachers);
 router.post("/change-password", auth(["teacher", "student", "admin"]), changePassword); // Allow admin too if needed, or keep as is
-router.get("/:id", auth(["admin"]), getTeacherById);
+router.get("/:id", auth(["admin", "teacher"]), getTeacherById);
 router.put("/:id", auth(["admin"]), editTeacher);
 router.delete("/:id", auth(["admin"]), deleteTeacher);
 

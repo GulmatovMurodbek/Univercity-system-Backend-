@@ -8,7 +8,8 @@ const TeacherSchema = new mongoose.Schema(
     role: { type: String, enum: ["teacher"], default: "teacher" },
     phone: { type: String },
     dateOfBirth: { type: Date },
-    subjects: [{ type: String }], 
+    subjects: [{ type: String }],
+    isDean: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

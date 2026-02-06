@@ -26,12 +26,14 @@ export const login = async (req, res) => {
       role = "admin";
     }
 
+
+
     if (!user) {
       return res.status(404).json({ message: "User not found!" });
     }
 
     // Тасдиқи password
-   
+
 
     // Эҷоди JWT token
     const token = jwt.sign(
@@ -48,6 +50,7 @@ export const login = async (req, res) => {
         fullName: user.fullName,
         email: user.email,
         role,
+        isDean: user.isDean,
       },
     });
   } catch (err) {

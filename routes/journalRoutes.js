@@ -8,7 +8,6 @@ import {
   getWeeklyGrades,
   getMyAttendance,
   getMyGrades,
-  getAdminNotes,
   getMissingAttendance
 } from "../controllers/journalController.js";
 import { auth } from "../middleware/auth.js";
@@ -16,15 +15,14 @@ import { auth } from "../middleware/auth.js";
 const router = express.Router();
 
 
-router.get("/group/:groupId/:date", getLessonsByGroupAndDate);
-router.get("/missing", auth(["admin"]), getMissingAttendance);
-router.get("/:date/:shift/:slot/:groupId/:subjectId", auth(["teacher", "admin"]), getJournalEntry);
+router.get("/group/:groupId/:date", auth(["admin", "teacher", "mudir"]), getLessonsByGroupAndDate);
+router.get("/missing", auth(["admin", "mudir"]), getMissingAttendance);
+router.get("/:date/:shift/:slot/:groupId/:subjectId", auth(["teacher", "admin", "mudir"]), getJournalEntry);
 router.put("/:id", auth(["teacher", "admin"]), updateJournalEntry);
-router.get("/weekly-attendance/:groupId", auth(["teacher", "admin"]), getWeeklyAttendance);
-router.get("/weekly-grades/:groupId", auth(["teacher", "admin"]), getWeeklyGrades);
+router.get("/weekly-attendance/:groupId", auth(["teacher", "admin", "mudir"]), getWeeklyAttendance);
+router.get("/weekly-grades/:groupId", auth(["teacher", "admin", "mudir"]), getWeeklyGrades);
 router.get("/my-attendance", auth(["student"]), getMyAttendance);
 router.get("/my-grades", auth(["student"]), getMyGrades);
-router.get("/admin-notes/:groupId", auth(["admin"]), getAdminNotes)
 
 
 export default router;

@@ -165,10 +165,9 @@ export const getJournalEntry = async (req, res) => {
 
       const studentsRecords = group.students.map((st) => ({
         studentId: st._id,
-        attendance: "absent",
+        attendance: "present",
         preparationGrade: null,
-        taskGrade: null,
-        notes: "",
+        taskGrade: null
       }));
 
       journal = await JournalEntry.create({
@@ -236,6 +235,7 @@ export const updateJournalEntry = async (req, res) => {
     );
 
     journal.students = students;
+    journal.isSubmitted = true;
     journal.markModified("students");
     await journal.save();
 
@@ -901,7 +901,7 @@ export const getMissingAttendance = async (req, res) => {
     query["week.day"] = dayOfWeekEn;
 
     const schedules = await WeeklySchedule.find(query)
-      .populate("groupId", "name shift")
+      .populate("groupId", "name shift course")
       .populate("week.lessons.subjectId", "name")
       .populate("week.lessons.teacherId", "fullName")
       .lean();
@@ -978,8 +978,10 @@ export const getMissingAttendance = async (req, res) => {
         const key = `${schedule.groupId._id.toString()}_${lesson.subjectId._id.toString()}_${slot}`;
 
         if (!journalSet.has(key)) {
+          const courseNum = (schedule.groupId && schedule.groupId.course) ? schedule.groupId.course : "";
           missingEntries.push({
             group: schedule.groupId.name,
+            course: courseNum, // Added course
             teacher: lesson.teacherId.fullName,
             subject: subjectName,
             time: lesson.time,
@@ -1171,22 +1173,33 @@ export const getMyGrades = async (req, res) => {
           if (!studentEntry) return;
 
           if (j.lessonSlot >= 1 && j.lessonSlot <= 6) {
-            const grade =
-              studentEntry.taskGrade ?? studentEntry.preparationGrade ?? null;
+            // Updated Logic: Expose raw data for Frontend transparency
+            const status = studentEntry.attendance || "absent";
+            const prep = studentEntry.preparationGrade;
+            const task = studentEntry.taskGrade;
 
-            lessons[j.lessonSlot - 1].grade =
-              grade !== null && grade !== undefined ? String(grade) : "—";
+            const lessonObj = lessons[j.lessonSlot - 1];
+
+            lessonObj.attendance = status;
+            lessonObj.preparationGrade = prep; // can be null/undefined
+            lessonObj.taskGrade = task; // can be null/undefined
+
+            // Keep legacy 'grade' for fallback/compatibility if needed, 
+            // but Frontend will prefer the fields above.
+            // Logic: if task exists, show task. Else if prep exists, show prep.
+            const displayGrade = task ?? prep ?? null;
+            lessonObj.grade = displayGrade !== null ? String(displayGrade) : "—";
 
             // subject name аз journal (source of truth) агар schedule нест/холӣ бошад
             if (
-              lessons[j.lessonSlot - 1].subject === "—" &&
+              lessonObj.subject === "—" &&
               j.subjectId?.name
             ) {
-              lessons[j.lessonSlot - 1].subject = j.subjectId.name;
+              lessonObj.subject = j.subjectId.name;
             }
             // Update type from journal if available
             if (j.lessonType) {
-              lessons[j.lessonSlot - 1].lessonType = j.lessonType;
+              lessonObj.lessonType = j.lessonType;
             }
           }
         });
@@ -1267,64 +1280,7 @@ export const getMyGrades = async (req, res) => {
 
 
 
-export const getAdminNotes = async (req, res) => {
-  try {
-    const { groupId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(groupId)) {
-      return res.status(400).json({ message: "groupId нодуруст аст" });
-    }
-
-    // Ҳамаи журналҳои ин гурӯҳро меҷӯем
-    const journals = await JournalEntry.find({ groupId })
-      .populate("subjectId", "name")
-      .populate("teacherId", "fullName")
-      .populate("groupId", "name")
-      .populate("students.studentId", "fullName")
-      .select("date subjectId teacherId groupId students")
-      .sort({ date: -1 }); // Аз навтарин
-
-    const notes = [];
-
-    journals.forEach((journal) => {
-      journal.students.forEach((studentEntry) => {
-        // Фақат агар notes дошта бошад ва холӣ набошад
-        if (studentEntry.notes && studentEntry.notes.trim() !== "") {
-          notes.push({
-            date: getDushanbeDateString(journal.date).split("-").reverse().join("."),
-            subject: journal.subjectId?.name || "—",
-            teacher: journal.teacherId?.fullName || "Муаллим нест",
-            group: journal.groupId?.name || "Гурӯҳ",
-            studentName: studentEntry.studentId?.fullName || "Донишҷӯ номаълум",
-            notes: studentEntry.notes.trim(),
-          });
-        }
-      });
-    });
-
-    // Гуруҳбандӣ кардан аз рӯи номи гурӯҳ (барои осонӣ дар frontend)
-    const groupedNotes = notes.reduce((acc, note) => {
-      const key = note.group;
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(note);
-      return acc;
-    }, {});
-
-    // Дар дохили ҳар гурӯҳ аз навтарин то куҳнатар
-    Object.keys(groupedNotes).forEach((group) => {
-      groupedNotes[group].sort((a, b) => {
-        const dateA = new Date(a.date.split(".").reverse().join("-"));
-        const dateB = new Date(b.date.split(".").reverse().join("-"));
-        return dateB - dateA;
-      });
-    });
-
-    res.json(groupedNotes);
-  } catch (err) {
-    console.error("getAdminNotes error:", err);
-    res.status(500).json({ message: "Хатогӣ дар сервер" });
-  }
-};
 
 // GET — Барои донишҷӯ: эзоҳҳои худи ӯ (аз ҳамаи гурӯҳҳо)
 export const getMyNotes = async (req, res) => {

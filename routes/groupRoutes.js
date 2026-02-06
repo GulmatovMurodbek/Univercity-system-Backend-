@@ -9,27 +9,29 @@ import {
   removeStudentFromGroup,
 } from "../controllers/groupController.js";
 
+import { auth } from "../middleware/auth.js";
+
 const router = express.Router();
 
 // ➕ Add group
-router.post("/", addGroup);
+router.post("/", auth(["admin"]), addGroup);
 
 // 📋 Get all groups
-router.get("/", getGroups);
+router.get("/", auth(["admin", "teacher", "mudir"]), getGroups);
 
 // 🎯 Get group by ID
-router.get("/:id", getGroupById);
+router.get("/:id", auth(["admin", "teacher", "mudir"]), getGroupById);
 
 // ✏️ Edit group
-router.put("/:id", editGroup);
+router.put("/:id", auth(["admin"]), editGroup);
 
 // 🗑️ Remove student from group
-router.delete("/remove-student", removeStudentFromGroup);
+router.delete("/remove-student", auth(["admin"]), removeStudentFromGroup);
 
 // ➕ Add student to group
-router.post("/add-student", addStudentToGroup);
+router.post("/add-student", auth(["admin"]), addStudentToGroup);
 
 // ❌ Delete group
-router.delete("/:id", deleteGroup);
+router.delete("/:id", auth(["admin"]), deleteGroup);
 
 export default router;
