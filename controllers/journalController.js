@@ -20,27 +20,25 @@ const getDushanbeDateString = (date) => {
   return dushanbeFormatter.format(new Date(date));
 };
 
-// Helper to check if date is in current week (Mon-Sun)
-const isDateInCurrentWeek = (dateCheck) => {
+// Helper: Check if date is allowed (Past dates + Current Week only)
+const isDateAllowed = (dateCheck) => {
   const d = new Date(dateCheck);
   const now = new Date();
 
-  // Normalize to start of day
-  const current = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Normalize check date to start of day
   const check = new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
-  // Calculate Monday of current week
-  const day = current.getDay();
-  const diff = current.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
-  const monday = new Date(current.setDate(diff));
-  monday.setHours(0, 0, 0, 0);
+  // Calculate Sunday of CURRENT week (Max allowed date)
+  const current = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const day = current.getDay(); // 0 is Sunday
+  const diffToSunday = day === 0 ? 0 : 7 - day; // If Sunday(0), +0. If Mon(1), +6.
 
-  // Calculate Sunday of current week
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  sunday.setHours(23, 59, 59, 999);
+  const currentWeekSunday = new Date(current);
+  currentWeekSunday.setDate(current.getDate() + diffToSunday);
+  currentWeekSunday.setHours(23, 59, 59, 999);
 
-  return check >= monday && check <= sunday;
+  // Allow if date is <= this coming Sunday
+  return check <= currentWeekSunday;
 };
 
 export const getJournalEntry = async (req, res) => {
@@ -51,8 +49,8 @@ export const getJournalEntry = async (req, res) => {
 
     // RULE: Teachers can only access Current Week
     if (currentUserRole === "teacher") {
-      if (!isDateInCurrentWeek(date)) {
-        return res.status(403).json({ message: "Дастрасӣ ба гузашта/оянда манъ аст (фақат ҳафтаи ҷорӣ)" });
+      if (!isDateAllowed(date)) {
+        return res.status(403).json({ message: "Дастрасӣ омӯзгор фақат ба гузашта ва ҳафтаи ҷорӣ маҳдуд аст" });
       }
     }
 
@@ -202,8 +200,9 @@ export const updateJournalEntry = async (req, res) => {
 
     // RESTRICTION: Teacher can only update CURRENT WEEK
     if (currentUserRole === "teacher") {
-      if (!isDateInCurrentWeek(journal.date)) {
-        return res.status(403).json({ message: "Шумо наметавонед журнали ҳафтаҳои гузаштаро таҳрир кунед" });
+      // Allow editing past journals too? Yes, user asked "purra dostup" (full access) for past.
+      if (!isDateAllowed(journal.date)) {
+        return res.status(403).json({ message: "Шумо наметавонед журнали ҳафтаҳои ояндаро таҳрир кунед" });
       }
     }
 
