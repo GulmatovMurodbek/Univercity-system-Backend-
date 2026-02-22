@@ -6,7 +6,8 @@ const { Schema } = mongoose;
 const LessonSchema = new Schema({
   time: {
     type: String,
-    required: true,
+    required: false,
+    default: "",
   },
   subjectId: {
     type: Schema.Types.ObjectId,
@@ -36,8 +37,15 @@ const LessonSchema = new Schema({
     default: "lecture",
     required: true,
   },
+  // Ток/Ҷуфт ёки ҳар ҳафта
+  weekType: {
+    type: String,
+    enum: ["all", "odd", "even"], // all=ҳар ҳафта, odd=ток, even=ҷуфт
+    default: "all",
+  },
   _id: false, // дар дохили массив ID-и иловагӣ лозим нест
 });
+
 
 const DailyScheduleSchema = new Schema({
   day: {

@@ -37,12 +37,26 @@ export const addGroup = async (req, res) => {
 // 📋 Get all groups
 export const getGroups = async (req, res) => {
   try {
-    // ⚠️ POPULATE REMOVED FOR PERFORMANCE
-    // Fetching thousands of students just to list groups is too slow.
-    // If you need student count, it is already stored in 'studentCount'.
+    const currentUserRole = req.user.role;
+    const currentUserId = req.user.id;
+
+    if (currentUserRole === "teacher") {
+      // Find all groups where this teacher has lessons in the weekly schedule
+      const schedules = await WeeklySchedule.find({
+        "week.lessons.teacherId": currentUserId
+      }).select("groupId");
+
+      const groupIds = [...new Set(schedules.map(s => s.groupId.toString()))];
+
+      const groups = await Group.find({ _id: { $in: groupIds } }).sort({ name: 1 });
+      return res.json(groups);
+    }
+
+    // Admins and others see all groups
     const groups = await Group.find().sort({ name: 1 });
     res.json(groups);
   } catch (err) {
+    console.error("getGroups error:", err);
     res.status(500).json({ error: err.message });
   }
 };

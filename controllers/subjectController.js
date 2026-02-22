@@ -13,8 +13,16 @@ export const createSubject = async (req, res) => {
 // 📌 Get All Subjects
 export const getAllSubjects = async (req, res) => {
   try {
-    const subjects = await Subject.find()
-      .populate("_id", "fullName")   // номи муаллимро меорад
+    const currentUserRole = req.user.role;
+    const currentUserId = req.user.id;
+
+    let query = {};
+    if (currentUserRole === "teacher") {
+      query = { "teachers.teacherId": currentUserId };
+    }
+
+    const subjects = await Subject.find(query)
+      .populate("teachers.teacherId", "fullName")   // номи муаллимро меорад
       .populate("groupId", "name")         // номи гуруҳро меорад
       .exec();
 

@@ -10,7 +10,8 @@ const router = express.Router();
 
 router.get("/my-schedule", auth(["teacher"]), getMyTeachingSchedule);
 router.get("/group/:groupId", auth(["admin", "teacher", "mudir", "student"]), getWeeklySchedule);
-router.post("/", auth(["admin"]), saveWeeklySchedule);
-router.delete("/group/:groupId", auth(["admin"]), deleteWeeklySchedule);
+// Мудир ҳам метавонад ҷадвал созад ва таҳрир/пок кунад
+router.post("/", auth(["admin", "mudir"]), saveWeeklySchedule);
+router.delete("/group/:groupId", auth(["admin", "mudir"]), deleteWeeklySchedule);
 
 export default router;

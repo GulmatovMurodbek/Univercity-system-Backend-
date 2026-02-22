@@ -6,6 +6,7 @@ import mongoose from "mongoose";
 import { format } from "date-fns";
 import { ru } from "date-fns/locale";
 import { createLog } from "./logController.js";
+import { getSemesterByDate, getAcademicYearStart, getSemesterStartDate } from "../utils/semesterUtils.js";
 
 // Helper: Санаро ҳамеша ба вақти Душанбе (Asia/Dushanbe) табдил медиҳем
 // Create formatter once to reuse (Performance optimization)
@@ -72,10 +73,7 @@ export const getJournalEntry = async (req, res) => {
     const lessonSlot = Number(slot);
 
     // 1. Determine semester based on date
-    let semester = 1;
-    if (targetDate.getMonth() >= 1 && targetDate.getMonth() <= 5) { // Feb-Jun
-      semester = 2;
-    }
+    const semester = getSemesterByDate(targetDate);
 
     // 2. Ҷадвали махсуси ҳамин гурӯҳро мегирем (бо назардошти семестр)
     const query = { groupId: new mongoose.Types.ObjectId(groupId) };
@@ -103,6 +101,25 @@ export const getJournalEntry = async (req, res) => {
     const lesson = dayData.lessons[lessonSlot - 1];
     if (!lesson || !lesson.subjectId || String(lesson.subjectId._id) !== subjectId) {
       return res.status(404).json({ message: "Дар ин вақт ин фан дар ҷадвал нест" });
+    }
+
+    // ── Валидатсияи Ҳафтаи Тоқ/Ҷуфт ──────────────────────────────
+    const academicYearStart = new Date(
+      targetDate.getMonth() >= 8
+        ? targetDate.getFullYear()
+        : targetDate.getFullYear() - 1,
+      8, 1 // 1 Сентябр
+    );
+    const diffMs = targetDate.getTime() - academicYearStart.getTime();
+    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+    const weekNum = Math.floor(diffDays / 7) + 1;
+    const currentWeekType = weekNum % 2 === 0 ? "odd" : "even";
+
+    const wt = lesson.weekType || "all";
+    if (wt !== "all" && wt !== currentWeekType) {
+      return res.status(403).json({
+        message: `Ин дарс танҳо дар ҳафтаҳои ${wt === 'odd' ? 'ТОҚ' : 'ҶУФТ'} дастрас аст`
+      });
     }
 
     // shift-ро месанҷем
@@ -178,9 +195,15 @@ export const getJournalEntry = async (req, res) => {
         lessonType: lesson.lessonType || "practice",
         students: studentsRecords,
       });
-
-      await journal.populate("students.studentId", "fullName");
     }
+
+    // Танҳо як бор populate мекунем (барои ҳамаи ҳолатҳо)
+    await journal.populate([
+      { path: "students.studentId", select: "fullName" },
+      { path: "subjectId", select: "name" },
+      { path: "groupId", select: "name course" }
+    ]);
+
     res.json(journal);
   } catch (err) {
     console.error("getJournalEntry error:", err);
@@ -246,6 +269,156 @@ export const updateJournalEntry = async (req, res) => {
     res.status(500).json({ message: "Хатогии сервер" });
   }
 };
+
+export const bulkUpdateJournalEntries = async (req, res) => {
+  try {
+    const { updates } = req.body;
+    const currentUserId = req.user.id;
+    const currentUserRole = req.user.role;
+
+    if (!Array.isArray(updates)) {
+      return res.status(400).json({ message: "Updates бояд массив бошад" });
+    }
+
+    let totalSavedStudents = 0;
+    const results = [];
+    const errors = [];
+    const scheduleCache = new Map(); // Cache schedules for groups during this request
+
+    for (const update of updates) {
+      const { groupId, subjectId, date, shift, slot, teacherId, students, topic, lessonType } = update;
+      const targetSlot = Number(slot) || 1;
+
+      let effectiveTeacherId = teacherId;
+      if (effectiveTeacherId === "[object Object]" || (effectiveTeacherId && typeof effectiveTeacherId === 'object' && !effectiveTeacherId._id)) {
+        effectiveTeacherId = undefined; // Fallback to current user
+      } else if (effectiveTeacherId && typeof effectiveTeacherId === 'object' && effectiveTeacherId._id) {
+        effectiveTeacherId = effectiveTeacherId._id;
+      }
+
+      console.log(`[BULK] Processing ${date} Slot:${targetSlot} Subject:${subjectId}`);
+
+      try {
+        // Teacher restriction check (same as single update)
+        if (currentUserRole === "teacher" && !isDateAllowed(date)) {
+          errors.push(`Санаи ${date} берун аз ҳудуди иҷозатдодашуда аст`);
+          continue;
+        }
+
+        const dateObj = new Date(date);
+        const dayStart = new Date(dateObj);
+        dayStart.setUTCHours(0, 0, 0, 0);
+        dayStart.setTime(dayStart.getTime() - 5 * 60 * 60 * 1000);
+        const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+
+        // STRICT find: must match lessonSlot
+        let journal = await JournalEntry.findOne({
+          date: { $gte: dayStart, $lte: dayEnd },
+          lessonSlot: targetSlot,
+          groupId,
+          subjectId,
+        });
+
+        if (journal) {
+          console.log(`[BULK] Found existing journal: ${journal._id}`);
+          if (currentUserRole !== "admin" && journal.teacherId.toString() !== currentUserId) {
+            errors.push(`Дастрасӣ манъ: журнали ${journal._id} ба муаллими дигар тааллуқ дорад`);
+            continue;
+          }
+
+          if (topic !== undefined) journal.topic = topic;
+          if (lessonType !== undefined) journal.lessonType = lessonType;
+
+          if (Array.isArray(students)) {
+            students.forEach(newSt => {
+              const existing = journal.students.find(s =>
+                s.studentId.toString() === newSt.studentId.toString()
+              );
+              if (existing) {
+                if (newSt.attendance !== undefined) existing.attendance = newSt.attendance;
+                if (newSt.preparationGrade !== undefined) existing.preparationGrade = newSt.preparationGrade;
+                if (newSt.taskGrade !== undefined) existing.taskGrade = newSt.taskGrade;
+              } else {
+                journal.students.push({
+                  studentId: newSt.studentId,
+                  attendance: newSt.attendance || 'present',
+                  preparationGrade: newSt.preparationGrade ?? null,
+                  taskGrade: newSt.taskGrade ?? null,
+                });
+              }
+              totalSavedStudents++;
+            });
+          }
+          journal.isSubmitted = true;
+          journal.markModified("students");
+          await journal.save();
+          console.log(`[BULK] Successfully updated journal: ${journal._id}`);
+          results.push(journal._id);
+        } else {
+          // Check schedule for authorization if creating NEW and not admin
+          if (currentUserRole !== "admin") {
+            let schedule = scheduleCache.get(groupId);
+            if (!schedule) {
+              schedule = await WeeklySchedule.findOne({ groupId });
+              scheduleCache.set(groupId, schedule);
+            }
+
+            const dayOfWeekEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(date).getDay()];
+            const dayData = schedule?.week.find(d => d.day === dayOfWeekEn);
+            const scheduleLesson = dayData?.lessons[targetSlot - 1];
+            const assignedTeacherId = scheduleLesson?.teacherId?._id || scheduleLesson?.teacherId;
+
+            if (String(assignedTeacherId) !== String(currentUserId)) {
+              errors.push(`Дастрасӣ манъ: дар санаи ${date} ин дарс дар ҷадвал ба шумо тааллуқ надорад`);
+              continue;
+            }
+          }
+
+          console.log(`[BULK] Creating new entry for ${date} Slot:${targetSlot}`);
+          journal = await JournalEntry.create({
+            date: new Date(date),
+            lessonSlot: targetSlot,
+            groupId,
+            subjectId,
+            teacherId: effectiveTeacherId || currentUserId,
+            shift: shift || 1,
+            lessonType: lessonType || 'practice',
+            students: students || [],
+            topic: topic || "",
+            isSubmitted: true
+          });
+          totalSavedStudents += (students ? students.length : 0);
+          results.push(journal._id);
+        }
+      } catch (err) {
+        console.error("[BULK] Item Error:", err);
+        errors.push(`Хатогӣ дар санаи ${date}: ${err.message}`);
+      }
+    }
+
+    // Log the bulk action
+    await createLog(
+      "BULK_UPDATE_JOURNAL",
+      currentUserId,
+      currentUserRole,
+      {
+        count: results.length,
+        studentsCount: totalSavedStudents,
+        groupId: updates[0]?.groupId
+      }
+    );
+
+    res.json({
+      message: "Навсозӣ анҷом ёфт",
+      saved: results.length,
+      studentsCount: totalSavedStudents,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err) {
+    console.error("bulkUpdateJournalEntries error:", err);
+    res.status(500).json({ message: "Хатогии сервер дар вақти навсозии якҷоя" });
+  }
+};
 export const getLessonsByGroupAndDate = async (req, res) => {
   try {
     const { groupId, date } = req.params;
@@ -278,10 +451,7 @@ export const getLessonsByGroupAndDate = async (req, res) => {
     const dayOfWeekEn = daysEn[targetDate.getDay()];
 
     // Определить семестр
-    let semester = 1;
-    if (targetDate.getMonth() >= 1 && targetDate.getMonth() <= 5) { // Feb-Jun
-      semester = 2;
-    }
+    const semester = getSemesterByDate(targetDate);
 
     const query = {
       groupId: new mongoose.Types.ObjectId(groupId),
@@ -310,16 +480,28 @@ export const getLessonsByGroupAndDate = async (req, res) => {
       });
     }
 
+    // ── Ҳисоби ҳафтаи ток/ҷуфт ──────────────────────────────────
+    const academicYearStart = new Date(
+      targetDate.getMonth() >= 8
+        ? targetDate.getFullYear()
+        : targetDate.getFullYear() - 1,
+      8, 1 // 1 Сентябр
+    );
+    const diffMs = targetDate.getTime() - academicYearStart.getTime();
+    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+    const weekNum = Math.floor(diffDays / 7) + 1;
+    const currentWeekType = weekNum % 2 === 0 ? "odd" : "even";
+
     const lessons = dayData.lessons
-      .map((lesson, index) => {
-        if (!lesson || !lesson.subjectId) return null;
-
-        // Logic for Shift
-        // 08:00 - 12:XX -> Shift 1
-        // 13:00 -> Ambiguous (Shift 1 end or Shift 2 start) -> Look at Group Shift
-        // 14:00+ -> Shift 2
-
-        const timeStart = lesson.time.split(" - ")[0] || ""; // "08:00"
+      .map((lesson, idx) => ({ ...lesson.toObject(), originalIndex: idx }))
+      .filter((lesson) => {
+        if (!lesson || !lesson.subjectId) return false;
+        // Фильтр бо weekType: "all" ҳамеша, "odd"/"even" танҳо ҳафтаи мувофиқ
+        const wt = lesson.weekType || "all";
+        return wt === "all" || wt === currentWeekType;
+      })
+      .map((lesson) => {
+        const timeStart = lesson.time.split(" - ")[0] || "";
         const hour = parseInt(timeStart.split(":")[0], 10);
 
         let shift = 1;
@@ -327,15 +509,12 @@ export const getLessonsByGroupAndDate = async (req, res) => {
         if (hour >= 14) {
           shift = 2;
         } else if (hour === 13) {
-          // If group is Shift 2, then 13:00 starts Shift 2.
-          // If group is Shift 1, then 13:00 is (likely) the last lesson of Shift 1.
           shift = groupShift === 2 ? 2 : 1;
         } else {
-          // hour <= 12
           shift = 1;
         }
 
-        const slot = index + 1;
+        const slot = lesson.originalIndex + 1;
 
         return {
           subjectName: lesson.subjectId.name,
@@ -343,11 +522,11 @@ export const getLessonsByGroupAndDate = async (req, res) => {
           teacherName: lesson.teacherId?.fullName || "Муаллим нест",
           teacherId: lesson.teacherId?._id,
           lessonType: lesson.lessonType || "practice",
+          weekType: lesson.weekType || "all",
           shift,
           slot,
         };
       })
-      .filter((l) => l !== null);
 
     res.status(200).json({ lessons, groupName: group.name });
   } catch (err) {
@@ -361,25 +540,20 @@ export const getWeeklyAttendance = async (req, res) => {
     const weekParam = parseInt(req.query.week);
     const semesterParam = parseInt(req.query.semester);
 
-    // 1. Determine Academic Year Start (Sep 1 of current academic cycle)
-    // If today is Sept-Dec, academic year starts this year.
-    // If today is Jan-Aug, academic year started previous year.
+    const targetGroup = await Group.findById(groupId).populate("students");
+    if (!targetGroup) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
+
+    // 1. Determine Academic Year Start
     const now = new Date();
-    const currentYear = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+    const currentYear = getAcademicYearStart(now);
 
     // 2. Determine Semester and Semester Start Date
     let semester = semesterParam;
     if (!semester) {
-      // Auto-detect if not provided
-      semester = (now.getMonth() >= 1 && now.getMonth() <= 5) ? 2 : 1;
+      semester = getSemesterByDate(now);
     }
 
-    let semesterStart;
-    if (semester === 2) {
-      semesterStart = new Date(currentYear + 1, 1, 1); // 1 Феврал
-    } else {
-      semesterStart = new Date(currentYear, 8, 1); // 1 Сентябр
-    }
+    const semesterStart = getSemesterStartDate(semester, currentYear, targetGroup.course);
 
     // 3. Determine Week Number
     // If week is provided, use it. If not, calculate current week relative to semesterStart (if we are in that semester)
@@ -412,42 +586,31 @@ export const getWeeklyAttendance = async (req, res) => {
       .populate("students.studentId", "fullName")
       .sort({ date: 1, lessonSlot: 1 });
 
-    const group = await Group.findById(groupId).populate("students");
-    if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
+    if (!targetGroup) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
     // 6 рӯз: Душанбе то Шанбе. 
     const days = [];
-    let currentDayIter = new Date(weekStart);
+    let dayIter = new Date(weekStart);
 
-    // Loop until we have 6 days OR we exceed a reasonable range (e.g. 2 weeks safety)
     while (days.length < 6) {
-      // Create independent date object
-      const dateToCheck = new Date(currentDayIter);
-
-      // Skip Sunday (0)
-      if (dateToCheck.getDay() !== 0) {
+      if (dayIter.getDay() !== 0) { // Skip Sunday
         days.push({
-          date: format(dateToCheck, "dd.MM"),
-          weekday: format(dateToCheck, "EEEE", { locale: ru }),
-          fullDate: dateToCheck // Store full date object for matching
+          date: format(dayIter, "dd.MM"),
+          weekday: format(dayIter, "EEEE", { locale: ru }),
+          fullDate: new Date(dayIter)
         });
       }
-
-      // Move to next day
-      currentDayIter.setDate(currentDayIter.getDate() + 1);
-
-      // Safety break to prevent infinite loop if weird logic
-      if (Math.abs((currentDayIter - weekStart) / (1000 * 60 * 60 * 24)) > 14) break;
+      dayIter.setDate(dayIter.getDate() + 1);
     }
 
     // Ҳар донишҷӯ — 6 рӯз × 6 дарс
-    const students = group.students.map(st => ({
+    const students = targetGroup.students.map(st => ({
       _id: st._id,
       fullName: st.fullName || "Ному насаб нест",
       attendance: days.map(day => ({
         date: day.date,
         weekday: day.weekday,
-        lessons: Array(6).fill(null).map(() => null) // L1 to L6, initialized to null
+        lessons: Array(3).fill(null).map(() => null) // Ҷуфти 1-3 (90 дақиқа)
       }))
     }));
 
@@ -468,7 +631,7 @@ export const getWeeklyAttendance = async (req, res) => {
         dayJournals.forEach(journal => {
           journal.students.forEach(s => {
             const student = students.find(st => st._id.toString() === s.studentId._id.toString());
-            if (student && journal.lessonSlot >= 1 && journal.lessonSlot <= 6) {
+            if (student && journal.lessonSlot >= 1 && journal.lessonSlot <= 3) {
               student.attendance[dayIndex].lessons[journal.lessonSlot - 1] = s.attendance;
             }
           });
@@ -477,7 +640,7 @@ export const getWeeklyAttendance = async (req, res) => {
     });
 
     res.json({
-      groupName: group.name,
+      groupName: targetGroup.name,
       weekNumber,
       semester,
       weekStart: format(weekStart, "dd.MM.yyyy"),
@@ -493,33 +656,26 @@ export const getWeeklyAttendance = async (req, res) => {
 export const getWeeklyGrades = async (req, res) => {
   try {
     const { groupId } = req.params;
-    const { subjectId, semester } = req.query; // Accept semester from query
+    const { subjectId, semester } = req.query;
 
-    const currentYear = new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1;
-    let semesterStart = new Date(currentYear, 8, 1);
-    const today = new Date();
-
-    // 1. Determine Semester
-    let targetSemester = 1;
-
-    if (semester) {
-      targetSemester = Number(semester);
-    } else {
-      // Logic to auto-detect semester
-      const now = new Date();
-      if (now.getMonth() >= 1 && now.getMonth() <= 5) {
-        targetSemester = 2; // Feb-Jun
-      }
+    if (!mongoose.Types.ObjectId.isValid(groupId)) {
+      return res.status(400).json({ message: "groupId нодуруст аст" });
     }
 
-    // 2. Adjust semesterStart based on targetSemester
-    // If Semester 1: Sep 1 of current academic year
-    // If Semester 2: Feb 1 of current academic year
-    if (targetSemester === 2) {
-      semesterStart = new Date(currentYear + 1, 1, 2); // Feb 2nd
-    } else {
-      semesterStart = new Date(currentYear, 8, 1); // Sep 1st
-    }
+    const targetGroup = await Group.findById(groupId).populate({
+      path: "students",
+      select: "fullName _id",
+    }).lean();
+
+    if (!targetGroup) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
+
+    const currentUserId = req.user.id;
+    const currentUserRole = req.user.role;
+
+    const now = new Date();
+    const currentYear = getAcademicYearStart(now);
+    let targetSemester = semester ? Number(semester) : getSemesterByDate(now);
+    const semesterStart = getSemesterStartDate(targetSemester, currentYear, targetGroup.course);
 
     // Query for Journals
     const query = {
@@ -535,17 +691,16 @@ export const getWeeklyGrades = async (req, res) => {
       query.subjectId = subjectId;
     }
 
+    // Teacher Filter: only see journals they marked (or were assigned to)
+    if (currentUserRole === "teacher") {
+      query.teacherId = currentUserId;
+    }
+
     const journals = await JournalEntry.find(query)
       .populate({ path: "subjectId", select: "name _id" })
       .populate({ path: "students.studentId", select: "fullName _id" })
+      .sort({ updatedAt: 1 }) // Latest update wins in the frontend mapping loop
       .lean();
-
-    const group = await Group.findById(groupId).populate({
-      path: "students",
-      select: "fullName _id",
-    }).lean();
-
-    if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
     // Schedule Query Logic
     const scheduleQuery = { groupId };
@@ -555,13 +710,20 @@ export const getWeeklyGrades = async (req, res) => {
       scheduleQuery.semester = targetSemester;
     }
 
-    const schedule = await WeeklySchedule.findOne(scheduleQuery).populate("week.lessons.subjectId", "name _id").lean();
-
+    const schedule = await WeeklySchedule.findOne(scheduleQuery)
+      .populate("week.lessons.subjectId", "name _id")
+      .populate("week.lessons.teacherId", "_id")
+      .lean();
     const subjectMap = new Map();
     if (schedule) {
       schedule.week.forEach((day) => {
         day.lessons.forEach((lesson) => {
           if (lesson.subjectId) {
+            // Teacher Filter: only see their assigned subjects
+            const assignedTeacherId = lesson.teacherId?._id || lesson.teacherId;
+            if (currentUserRole === "teacher" && String(assignedTeacherId) !== currentUserId) {
+              return;
+            }
             subjectMap.set(lesson.subjectId._id.toString(), lesson.subjectId.name);
           }
         });
@@ -580,17 +742,24 @@ export const getWeeklyGrades = async (req, res) => {
 
     const weeklyLessonCounts = {};
     if (schedule) {
-      schedule.week.forEach((day, dayIndex) => {
-        const weekNumber = Math.floor(dayIndex / 6) + 1;
-        day.lessons.forEach((lesson) => {
-          if (lesson.subjectId) {
-            const subjId = lesson.subjectId._id.toString();
-            if (!weeklyLessonCounts[subjId]) weeklyLessonCounts[subjId] = {};
-            if (!weeklyLessonCounts[subjId][weekNumber]) weeklyLessonCounts[subjId][weekNumber] = 0;
-            weeklyLessonCounts[subjId][weekNumber]++;
-          }
+      // We calculate for each of the 16 weeks based on lesson parity
+      for (let w = 1; w <= 16; w++) {
+        const isOddWeek = w % 2 !== 0;
+        schedule.week.forEach((dayData) => {
+          dayData.lessons.forEach((lesson) => {
+            if (lesson.subjectId) {
+              // Check week type (odd/even parity)
+              if (lesson.weekType === "odd" && !isOddWeek) return;
+              if (lesson.weekType === "even" && isOddWeek) return;
+
+              const subjId = lesson.subjectId._id.toString();
+              if (!weeklyLessonCounts[subjId]) weeklyLessonCounts[subjId] = {};
+              if (!weeklyLessonCounts[subjId][w]) weeklyLessonCounts[subjId][w] = 0;
+              weeklyLessonCounts[subjId][w]++;
+            }
+          });
         });
-      });
+      }
     }
 
     // MAP JOURNALS BY DATE
@@ -608,41 +777,50 @@ export const getWeeklyGrades = async (req, res) => {
 
     while (weekNum <= 16) {
       const days = [];
-      for (let i = 0; i < 6; i++) {
-        const date = new Date(currentWeekStart);
-        date.setDate(currentWeekStart.getDate() + i);
-        if (false) break; // Allow future dates
+      let dayIter = new Date(currentWeekStart);
+      while (days.length < 6) {
+        const date = new Date(dayIter);
+        if (date.getDay() !== 0) { // Skip Sunday
+          const dateStr = getDushanbeDateString(date);
+          const dayOfWeek = daysEn[date.getDay()];
+          const scheduleDay = schedule?.week.find(d => d.day === dayOfWeek);
 
-        const dateStr = getDushanbeDateString(date);
-        const dayOfWeek = daysEn[date.getDay()];
-        const scheduleDay = schedule?.week.find(d => d.day === dayOfWeek);
+          const lessonsTemplate = Array(6).fill(null).map((_, idx) => ({
+            lessonSlot: idx + 1,
+            attendance: null,
+            preparationGrade: null,
+            taskGrade: null,
+            subjectId: null,
+            subjectName: "—",
+            lessonType: null,
+          }));
 
-        const lessonsTemplate = Array(6).fill(null).map(() => ({
-          attendance: null,
-          preparationGrade: null,
-          taskGrade: null,
-          subjectId: null,
-          subjectName: "—",
-          lessonType: null,
-        }));
+          if (scheduleDay) {
+            const isOddWeek = weekNum % 2 !== 0;
+            scheduleDay.lessons.forEach((l, idx) => {
+              if (l.subjectId && idx < 6) {
+                // Check week type (odd/even parity)
+                if (l.weekType === "odd" && !isOddWeek) return;
+                if (l.weekType === "even" && isOddWeek) return;
 
-        if (scheduleDay) {
-          scheduleDay.lessons.forEach((l, idx) => {
-            if (l.subjectId && idx < 6) {
-              lessonsTemplate[idx].subjectId = l.subjectId._id.toString();
-              lessonsTemplate[idx].subjectName = l.subjectId.name;
-              lessonsTemplate[idx].lessonType = l.lessonType || "practice";
-            }
+                lessonsTemplate[idx].subjectId = l.subjectId._id.toString();
+                lessonsTemplate[idx].subjectName = l.subjectId.name;
+                lessonsTemplate[idx].lessonType = l.lessonType || "practice";
+                const tId = l.teacherId?._id || l.teacherId;
+                lessonsTemplate[idx].teacherId = tId ? String(tId) : null;
+              }
+            });
+          }
+
+          days.push({
+            date: format(date, "dd.MM"),
+            weekday: format(date, "EEEE", { locale: ru }),
+            fullDate: date,
+            lessonsTemplate,
+            dateStr // Needed for mapping
           });
         }
-
-        days.push({
-          date: format(date, "dd.MM"),
-          weekday: format(date, "EEEE", { locale: ru }),
-          fullDate: date,
-          lessonsTemplate,
-          dateStr // Needed for mapping
-        });
+        dayIter.setDate(dayIter.getDate() + 1);
       }
 
       if (days.length > 0) {
@@ -655,7 +833,7 @@ export const getWeeklyGrades = async (req, res) => {
       weekNum++;
     }
 
-    const students = group.students.map((st) => ({
+    const students = targetGroup.students.map((st) => ({
       _id: st._id.toString(),
       fullName: st.fullName || "Ному насаб нест",
       grades: weeks.flatMap((w) =>
@@ -673,6 +851,7 @@ export const getWeeklyGrades = async (req, res) => {
 
               if (sEntry && journal.lessonSlot >= 1 && journal.lessonSlot <= 6) {
                 const lesson = lessons[journal.lessonSlot - 1];
+                lesson.lessonSlot = journal.lessonSlot;
                 lesson.attendance = sEntry.attendance;
                 lesson.preparationGrade = sEntry.preparationGrade;
                 lesson.taskGrade = sEntry.taskGrade;
@@ -689,6 +868,7 @@ export const getWeeklyGrades = async (req, res) => {
 
           return {
             date: day.date,
+            dateStr: day.dateStr,
             weekday: day.weekday,
             weekNumber: w.weekNumber,
             lessons
@@ -698,7 +878,9 @@ export const getWeeklyGrades = async (req, res) => {
     }));
 
     res.json({
-      groupName: group.name,
+      groupName: targetGroup.name,
+      course: targetGroup.course,
+      semesterStart: semesterStart.toISOString(),
       students,
       subjects,
       weeklyLessonCounts,
@@ -710,50 +892,22 @@ export const getWeeklyGrades = async (req, res) => {
 };
 export const getMyAttendance = async (req, res) => {
   try {
-    const studentId = req.user?.id; // санҷиши бехатар
+    const studentId = req.user?.id;
     if (!studentId) {
       return res.status(401).json({ message: "Донишҷӯ сабт нашудааст" });
     }
 
-    // Semester logic (mirrors getMyGrades)
-    let { semester } = req.query;
-    const currentMonth = new Date().getMonth(); // 0=Jan, 11=Dec
-    const currentYear = new Date().getFullYear();
+    // 1) Find student's group and course
+    const group = await Group.findOne({ students: studentId }).select("course").lean();
+    if (!group) return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
 
-    // Default semester if not provided
-    if (!semester) {
-      if (currentMonth >= 8 || currentMonth <= 0) semester = 1; // Sept-Jan -> Sem 1
-      else semester = 2; // Feb-Aug -> Sem 2
-    }
-    semester = parseInt(semester);
+    // 2) Determine Semester and Start Date
+    const now = new Date();
+    const currentYear = getAcademicYearStart(now);
+    const { semester: semesterParam } = req.query;
+    const semester = semesterParam ? parseInt(semesterParam) : getSemesterByDate(now);
 
-    let semesterStart;
-    const isSecondSemester = semester === 2;
-
-    if (isSecondSemester) {
-      // Semester 2: Starts ~Feb 10
-      // If currently Jan-Aug, it's this year. If Sept-Dec, it implies next year (but usually we query for current/past).
-      // Assuming straightforward academic year:
-      // If today is late 2025 (Sem 1), asking for Sem 2 means Spring 2026.
-      // If today is Spring 2026 (Sem 2), asking for Sem 2 means Spring 2026.
-      // Simply: Logic from getMyGrades
-      if (currentMonth >= 8) {
-        // We are in Sem 1 (Autumn), Sem 2 is next year
-        semesterStart = new Date(currentYear + 1, 1, 2);
-      } else {
-        // We are in Sem 2 (Spring) or Summer, it's this year
-        semesterStart = new Date(currentYear, 1, 2);
-      }
-    } else {
-      // Semester 1: Starts Sept 1
-      if (currentMonth >= 0 && currentMonth < 8) {
-        // We are in Spring (Jan-Aug), Sem 1 was previous year
-        semesterStart = new Date(currentYear - 1, 8, 1);
-      } else {
-        // We are in Autumn (Sept-Dec), Sem 1 is this year
-        semesterStart = new Date(currentYear, 8, 1);
-      }
-    }
+    const semesterStart = getSemesterStartDate(semester, currentYear, group.course);
 
     // Set end date boundary (for data fetching efficiency, though we loop 16 weeks fixedly)
     // Actually, distinct from logic "up to today", usually we want to see the whole semester grid?
@@ -799,7 +953,7 @@ export const getMyAttendance = async (req, res) => {
         const lessons = Array(6).fill("—");
 
         dayJournals.forEach(j => {
-          // Since we queried "students.studentId": studentId, the student SHOULD be there, 
+          // Since we queried "students.studentId": studentId, the student SHOULD be there,
           // but if we didn't use projection `students.$`, we iterate.
           // Earlier I changed find query to include studentId, but returned full docs.
           const studentEntry = j.students.find(s => s.studentId?.toString() === studentId);
@@ -859,149 +1013,6 @@ export const getMyAttendance = async (req, res) => {
   }
 };
 
-// GET — Рӯйхати дарсҳое, ки журнал надоранд (барои як рӯзи мушаххас)
-
-// GET — Рӯйхати дарсҳое, ки журнал надоранд (барои як рӯзи мушаххас)
-export const getMissingAttendance = async (req, res) => {
-  try {
-    const { date } = req.query;
-
-    // 1. Determine Date
-    const targetDate = date ? new Date(date) : new Date();
-    if (isNaN(targetDate.getTime())) {
-      return res.status(400).json({ message: "Санаи нодуруст" });
-    }
-
-    // Determine Day of Week
-    const daysEn = [
-      "Sunday",
-      "Monday",
-      "Tuesday",
-      "Wednesday",
-      "Thursday",
-      "Friday",
-      "Saturday",
-    ];
-    const dayOfWeekEn = daysEn[targetDate.getDay()];
-
-    // 2. Determine Semester
-    let semester = 1;
-    if (targetDate.getMonth() >= 1 && targetDate.getMonth() <= 5) {
-      semester = 2;
-    }
-
-    // 3. Find All SCHEDULES
-    const query = {};
-    if (semester === 1) {
-      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
-    } else {
-      query.semester = semester;
-    }
-    query["week.day"] = dayOfWeekEn;
-
-    const schedules = await WeeklySchedule.find(query)
-      .populate("groupId", "name shift course")
-      .populate("week.lessons.subjectId", "name")
-      .populate("week.lessons.teacherId", "fullName")
-      .lean();
-
-    // 4. BULK FETCH: Get all journals for this date
-    // Normalize date range
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const existingJournals = await JournalEntry.find({
-      date: { $gte: startOfDay, $lte: endOfDay }
-    })
-      .select("groupId subjectId lessonSlot")
-      .lean();
-
-    // Create a Set for fast lookup: "groupId_subjectId_slot"
-    const journalSet = new Set();
-    existingJournals.forEach(j => {
-      if (j.groupId && j.subjectId) {
-        journalSet.add(`${j.groupId.toString()}_${j.subjectId.toString()}_${j.lessonSlot}`);
-      }
-    });
-
-    const missingEntries = [];
-
-    // 5. Iterate and Check (In-Memory)
-    for (const schedule of schedules) {
-      const dayData = schedule.week.find((d) => d.day === dayOfWeekEn);
-      if (!dayData || !dayData.lessons) continue;
-
-      for (let i = 0; i < dayData.lessons.length; i++) {
-        const lesson = dayData.lessons[i];
-
-        // Basic Validations
-        if (!lesson.subjectId || !lesson.teacherId) continue;
-
-        const subjectName = (lesson.subjectId && lesson.subjectId.name) ? lesson.subjectId.name : "";
-        const groupName = (schedule.groupId && schedule.groupId.name) ? schedule.groupId.name : "";
-        const teacherName = (lesson.teacherId && lesson.teacherId.fullName) ? lesson.teacherId.fullName : "";
-
-        const lowerSubject = subjectName.toLowerCase();
-        const lowerGroup = groupName.toLowerCase();
-        const lowerTeacher = teacherName.toLowerCase();
-
-        // --- FILTERS ---
-        // 1. Exclude Military Department (Variable spellings)
-        // Checks: ҳарбӣ, харби, harbi, military, военн
-        if (
-          lowerSubject.includes("ҳарби") || lowerSubject.includes("harbi") || lowerSubject.includes("харби") || lowerSubject.includes("военн") ||
-          lowerGroup.includes("ҳарби") || lowerGroup.includes("harbi") || lowerGroup.includes("харби") || lowerGroup.includes("военн") ||
-          lowerTeacher.includes("ҳарби") || lowerTeacher.includes("harbi") || lowerTeacher.includes("харби") || lowerTeacher.includes("военн")
-        ) {
-          continue;
-        }
-
-        // 2. Exclude Empty/Window
-        if (lowerSubject.includes("window") || lowerSubject.includes("empty") || lowerSubject.includes("холи")) continue;
-
-        const slot = i + 1;
-
-        // Shift Logic
-
-        const timeStart = lesson.time.split(" - ")[0] || "";
-        const hour = parseInt(timeStart.split(":")[0], 10);
-        let shift = 1;
-        if (hour >= 14) shift = 2;
-        else if (hour === 13) shift = schedule.groupId.shift === 2 ? 2 : 1;
-        else shift = 1;
-
-        // CHECK EXISTENCE IN SET
-        // Key: groupId_subjectId_slot
-        const key = `${schedule.groupId._id.toString()}_${lesson.subjectId._id.toString()}_${slot}`;
-
-        if (!journalSet.has(key)) {
-          const courseNum = (schedule.groupId && schedule.groupId.course) ? schedule.groupId.course : "";
-          missingEntries.push({
-            group: schedule.groupId.name,
-            course: courseNum, // Added course
-            teacher: lesson.teacherId.fullName,
-            subject: subjectName,
-            time: lesson.time,
-            slot: slot,
-            shift: shift
-          });
-        }
-      }
-    }
-
-    res.json({
-      date: format(targetDate, "dd.MM.yyyy"),
-      count: missingEntries.length,
-      missing: missingEntries
-    });
-  } catch (err) {
-    console.error("getMissingAttendance error:", err);
-    res.status(500).json({ message: "Хатогӣ дар сервер" });
-  }
-};
-
 
 export const getMyGrades = async (req, res) => {
   try {
@@ -1011,62 +1022,21 @@ export const getMyGrades = async (req, res) => {
     }
 
     // 1) Гурӯҳи донишҷӯро ёфтан
-    const group = await Group.findOne({ students: studentId }).select("_id name").lean();
+    const group = await Group.findOne({ students: studentId }).select("_id name course").lean();
     if (!group) {
       return res.status(404).json({ message: "Гурӯҳ ёфт нашуд" });
     }
 
     const groupId = group._id;
 
-    // 2) Ҷадвали ҳафтаинаи гурӯҳ
-    // 2) Ҷадвали ҳафтаинаи гурӯҳ
-    // 2) Ҷадвали ҳафтаинаи гурӯҳ
     const now = new Date();
-    const currentYear = now.getFullYear();
-    const { semester } = req.query; // Accept semester from query
+    const currentYear = getAcademicYearStart(now);
 
-    let targetSemester = 1;
-    let semesterStart;
-    let isSecondSemester = false;
+    // 1. Determine Semester
+    const targetSemester = req.query.semester ? Number(req.query.semester) : getSemesterByDate(now);
 
-    // Determine target based on query OR date
-    if (semester) {
-      targetSemester = Number(semester);
-    } else {
-      // Logic to auto-detect semester
-      if (now.getMonth() + 1 === 12 && now.getDate() >= 22) { // Late Dec
-        targetSemester = 1;
-      } else if (now.getMonth() === 0) { // Jan
-        targetSemester = 1;
-      } else if (now.getMonth() + 1 >= 2 && now.getMonth() + 1 <= 6) { // Feb-Jun
-        targetSemester = 2;
-      } else {
-        targetSemester = 1; // Default/Sep-Dec
-      }
-    }
-
-    // Set dates based on targetSemester
-    if (targetSemester === 2) {
-      isSecondSemester = true;
-      // If current month is before Feb (e.g. looking ahead) or way after, guess year?
-      // Usually we look at current academic year.
-      // Implementation Detail: if it's Jan 2026, Sem 2 starts Feb 2026.
-      // If it's Sep 2025, Sem 2 starts Feb 2026.
-      // If currently Sep-Dec (Sem 1), showing Sem 2 is "future".
-      // If currently Feb-Jun (Sem 2), showing Sem 1 is "past" (Sep prev year).
-
-      // ROBUST YEAR LOGIC:
-      // Academic Year is defined by "Sep of Year X" to "Jun of Year X+1".
-      // If now is Sep-Dec 2025 -> Academic Year Start is 2025. Sem 2 is 2026.
-      // If now is Jan-Jun 2026 -> Academic Year Start is 2025. Sem 2 is 2026.
-
-      const academicYearStart = (now.getMonth() >= 8) ? currentYear : currentYear - 1;
-      semesterStart = new Date(academicYearStart + 1, 1, 1); // Feb 1st of next year
-    } else {
-      isSecondSemester = false;
-      const academicYearStart = (now.getMonth() >= 8) ? currentYear : currentYear - 1;
-      semesterStart = new Date(academicYearStart, 8, 1); // Sep 1st
-    }
+    // 2. Adjust semesterStart based on targetSemester
+    const semesterStart = getSemesterStartDate(targetSemester, currentYear, group.course);
 
     // Override manual logic with explicit calculation
     // ...
@@ -1084,7 +1054,6 @@ export const getMyGrades = async (req, res) => {
 
     // Logic moved up
 
-    const today = new Date();
 
     // 3) JournalEntry-ҳо (фақат дар ҳамин семестр ва барои ҳамин student)
     // IMPORTANT: Remove $lte: today to allow viewing full semester (even future if exists, though unlikely)
@@ -1101,7 +1070,7 @@ export const getMyGrades = async (req, res) => {
     if ((!journals || journals.length === 0) && !schedule) {
       return res.json({
         message: "Шумо ҳанӯз баҳо нагирифтаед",
-        semester: isSecondSemester ? 2 : 1,
+        semester: targetSemester,
         semesterStart: getDushanbeDateString(semesterStart),
         weeks: [],
         stats: { total: 0, average: 0, maxGrade: 0, minGrade: 0 },
@@ -1183,7 +1152,7 @@ export const getMyGrades = async (req, res) => {
             lessonObj.preparationGrade = prep; // can be null/undefined
             lessonObj.taskGrade = task; // can be null/undefined
 
-            // Keep legacy 'grade' for fallback/compatibility if needed, 
+            // Keep legacy 'grade' for fallback/compatibility if needed,
             // but Frontend will prefer the fields above.
             // Logic: if task exists, show task. Else if prep exists, show prep.
             const displayGrade = task ?? prep ?? null;
@@ -1274,6 +1243,115 @@ export const getMyGrades = async (req, res) => {
   } catch (err) {
     console.error("getMyGrades error:", err);
     return res.status(500).json({ message: "Хатогӣ дар сервер" });
+  }
+};
+
+// GET — Рӯйхати дарсҳое, ки журнал надоранд (барои як рӯзи мушаххас)
+export const getMissingAttendance = async (req, res) => {
+  try {
+    const { date } = req.query;
+
+    // 1. Determine Date (Today or Requested)
+    const targetDate = date ? new Date(date) : new Date();
+    if (isNaN(targetDate.getTime())) {
+      return res.status(400).json({ message: "Санаи нодуруст" });
+    }
+
+    // Determine Day of Week
+    const daysEn = [
+      "Sunday",
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+    ];
+    const dayOfWeekEn = daysEn[targetDate.getDay()];
+
+    // 2. Determine Semester
+    const semester = getSemesterByDate(targetDate);
+
+    // 3. Find All SCHEDULES for this semester that have lessons on this day
+    const query = {};
+    if (semester === 1) {
+      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
+    } else {
+      query.semester = semester;
+    }
+
+    // Filter by Teacher if role is teacher
+    if (req.user.role === "teacher") {
+      query["week.lessons.teacherId"] = req.user.id;
+    }
+
+    // Optimization: Filter schedules that actually have lessons on this day
+    query["week.day"] = dayOfWeekEn;
+
+    const schedules = await WeeklySchedule.find(query)
+      .populate("groupId", "name shift")
+      .populate("week.lessons.subjectId", "name")
+      .populate("week.lessons.teacherId", "fullName")
+      .lean();
+
+    const missingEntries = [];
+
+    // 4. Iterate and Check Journal Entries
+    for (const schedule of schedules) {
+      const dayData = schedule.week.find((d) => d.day === dayOfWeekEn);
+      if (!dayData || !dayData.lessons) continue;
+
+      for (let i = 0; i < dayData.lessons.length; i++) {
+        const lesson = dayData.lessons[i];
+        if (!lesson.subjectId || !lesson.teacherId) continue; // Skip empty slots
+
+        // Teacher Filter: specifically check if THIS lesson belongs to the teacher
+        if (req.user.role === "teacher" && String(lesson.teacherId._id || lesson.teacherId) !== req.user.id) {
+          continue;
+        }
+
+        // Calculate Slot and Shift
+        const slot = i + 1;
+        // Shift logic same as getLessonsByGroupAndDate
+        const timeStart = lesson.time.split(" - ")[0] || "";
+        const hour = parseInt(timeStart.split(":")[0], 10);
+        let shift = 1;
+        if (hour >= 14) shift = 2;
+        else if (hour === 13) shift = schedule.groupId.shift === 2 ? 2 : 1;
+        else shift = 1;
+
+        // Check if Journal Exists
+        const exists = await JournalEntry.exists({
+          groupId: schedule.groupId._id,
+          date: {
+            $gte: new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()),
+            $lt: new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() + 1),
+          },
+          lessonSlot: slot,
+          subjectId: lesson.subjectId._id,
+        });
+
+        if (!exists) {
+          missingEntries.push({
+            group: schedule.groupId.name,
+            teacher: lesson.teacherId.fullName,
+            subject: lesson.subjectId.name,
+            time: lesson.time,
+            slot: slot,
+            shift: shift
+          });
+        }
+      }
+    }
+
+    res.json({
+      date: format(targetDate, "dd.MM.yyyy"),
+      count: missingEntries.length,
+      missing: missingEntries
+    });
+  } catch (err) {
+    console.error("getMissingAttendance error:", err);
+    res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };
 

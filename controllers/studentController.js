@@ -82,6 +82,14 @@ export const getStudents = async (req, res) => {
       }
     }
 
+    // Add course and group filters
+    if (req.query.course && req.query.course !== "all") {
+      query.course = Number(req.query.course);
+    }
+    if (req.query.group && req.query.group !== "all") {
+      query.group = req.query.group;
+    }
+
     const total = await Student.countDocuments(query);
     const students = await Student.find(query)
       .populate("group", "name") // Populate group name

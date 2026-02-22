@@ -76,6 +76,18 @@ export const getWeeklySchedule = async (req, res) => {
   }
 };
 
+// Ёрдамӣ: "" –ро барои ObjectId майдонҳо null мекунад
+const sanitizeWeek = (week) => {
+  return week.map((day) => ({
+    ...day,
+    lessons: (day.lessons || []).map((lesson) => ({
+      ...lesson,
+      subjectId: lesson.subjectId || null,
+      teacherId: lesson.teacherId || null,
+    })),
+  }));
+};
+
 // POST — Сабт / Навсозӣ
 export const saveWeeklySchedule = async (req, res) => {
   try {
@@ -101,16 +113,19 @@ export const saveWeeklySchedule = async (req, res) => {
       query.semester = targetSemester;
     }
 
+    // "" строкаҳоро null мекунем (Mongoose ObjectId cast хатогӣ намедиҳад)
+    const cleanWeek = sanitizeWeek(week);
+
     let schedule = await WeeklySchedule.findOne(query);
 
     if (schedule) {
       // Навсозӣ
-      schedule.week = week;
+      schedule.week = cleanWeek;
       schedule.semester = targetSemester; // Ensure it's set
       await schedule.save();
     } else {
       // Эҷод
-      schedule = new WeeklySchedule({ groupId, week, semester: targetSemester });
+      schedule = new WeeklySchedule({ groupId, week: cleanWeek, semester: targetSemester });
       await schedule.save();
     }
 
@@ -133,17 +148,26 @@ export const saveWeeklySchedule = async (req, res) => {
   }
 };
 
+
 // DELETE — Пок кардани ҷадвал
 export const deleteWeeklySchedule = async (req, res) => {
   try {
     const { groupId } = req.params;
-    const result = await WeeklySchedule.findOneAndDelete({ groupId });
+    const semester = req.query.semester ? parseInt(req.query.semester) : undefined;
 
-    if (!result) {
+    const query = { groupId };
+    if (semester) query.semester = semester;
+
+    const result = await WeeklySchedule.deleteMany(query);
+
+    if (result.deletedCount === 0) {
       return res.status(404).json({ message: "Ҷадвал ёфт нашуд" });
     }
 
-    res.json({ message: "Ҷадвал бо муваффақият пок карда шуд" });
+    res.json({
+      message: "Ҷадвал бо муваффақият пок шуд",
+      deletedCount: result.deletedCount,
+    });
   } catch (err) {
     console.error("deleteWeeklySchedule error:", err);
     res.status(500).json({ message: "Хатогӣ дар сервер" });
@@ -162,25 +186,18 @@ export const getMyTeachingSchedule = async (req, res) => {
       currentSemester = 2;
     }
 
-    // Build query to match teacher AND current semester
-    const query = {
+    // Build query to match teacher (all semesters for groups list)
+    const allQuery = {
       "week.lessons.teacherId": teacherId
     };
 
-    if (currentSemester === 1) {
-      // Semester 1 OR missing semester field (legacy)
-      query.$or = [{ semester: 1 }, { semester: { $exists: false } }];
-    } else {
-      query.semester = 2;
-    }
-
-    // Ҳамаи ҷадвалҳо, ки муаллим дар онҳо ҳаст (Current Semester only)
-    const schedules = await WeeklySchedule.find(query)
-      .populate("groupId", "name shift")
+    // Ҳамаи ҷадвалҳо, ки муаллим дар онҳо ҳаст
+    const allSchedules = await WeeklySchedule.find(allQuery)
+      .populate("groupId", "name shift course faculty")
       .populate("week.lessons.subjectId", "name")
       .lean();
 
-    if (!schedules.length) {
+    if (!allSchedules.length) {
       return res.json({
         message: "Шумо ҳанӯз дар ягон гурӯҳ дарс надоред",
         groups: [],
@@ -196,8 +213,13 @@ export const getMyTeachingSchedule = async (req, res) => {
     const todayLessons = [];
 
     // Рӯзи дархостшуда (ё имрӯз)
-    // Supports ?date=YYYY-MM-DD
     const targetDate = req.query.date ? new Date(req.query.date) : new Date();
+
+    // Determine target semester for totals/today
+    let targetSemester = 1;
+    if (targetDate.getMonth() >= 1 && targetDate.getMonth() <= 5) {
+      targetSemester = 2;
+    }
 
     // Reset time to start of day for accurate Date comparison
     const startOfDay = new Date(targetDate);
@@ -218,54 +240,64 @@ export const getMyTeachingSchedule = async (req, res) => {
       }
     }).lean();
 
-    schedules.forEach((schedule) => {
-      const groupInfo = {
-        id: schedule.groupId._id.toString(),
-        name: schedule.groupId.name,
-        shift: schedule.groupId.shift,
-      };
-      groupsMap.set(groupInfo.id, groupInfo);
+    allSchedules.forEach((schedule) => {
+      // ALWAYS add to groupsMap regardless of semester (Teacher wants to see all their groups)
+      if (schedule.groupId) {
+        const groupInfo = {
+          _id: schedule.groupId._id.toString(),
+          name: schedule.groupId.name,
+          shift: schedule.groupId.shift,
+          course: schedule.groupId.course,
+          faculty: schedule.groupId.faculty,
+        };
+        groupsMap.set(groupInfo._id, groupInfo);
+      }
 
-      // Ҳисоби умумӣ (ҳамаи рӯзҳо)
+      // Check if this schedule matches the target semester for filtering lessons/hours
+      let matchesSemester = false;
+      if (targetSemester === 1) {
+        matchesSemester = schedule.semester === 1 || !schedule.semester;
+      } else {
+        matchesSemester = schedule.semester === 2;
+      }
+
+      // Ҳисоби умумӣ ва дарсҳои имрӯз
       schedule.week.forEach((day) => {
         day.lessons.forEach((lesson) => {
-          // Санҷиши бехатар: teacherId вуҷуд дошта бошад
           if (lesson.teacherId && lesson.teacherId.toString() === teacherId) {
+            // Add subject name to set regardless of semester (or keep it semester-specific? Let's say ALL subjects)
             if (lesson.subjectId?.name) {
               subjectsSet.add(lesson.subjectId.name);
             }
-            totalHours += 1;
 
-            // Агар рӯзи имрӯз бошад — ба todayLessons илова мекунем
-            if (day.day === currentDayName) {
-              const lessonSlot = day.lessons.indexOf(lesson) + 1;
+            // Only count hours and today's lessons if matches target semester
+            if (matchesSemester) {
+              totalHours += 1;
 
-              // Check if journal exists for this specific lesson
-              // criteria: groupId, subjectId, shift, slot (and date/teacher which we filtered by)
-              const isHeld = todayJournals.some(j =>
-                j.groupId.toString() === schedule.groupId._id.toString() &&
-                j.subjectId.toString() === lesson.subjectId._id.toString() &&
-                j.lessonSlot === lessonSlot &&
-                // shift check might be tricky if not stored on lesson explicitly, but usually schedule.groupId.shift
-                // let's assume schedule.groupId.shift maps to journal shift 
-                // (journal shift is 1 or 2, schedule shift might be "1" or "2" string)
-                Number(j.shift) === Number(schedule.groupId.shift) &&
-                j.isSubmitted === true
-              );
+              if (day.day === currentDayName) {
+                const lessonSlot = day.lessons.indexOf(lesson) + 1;
+                const isHeld = todayJournals.some(j =>
+                  j.groupId.toString() === schedule.groupId._id.toString() &&
+                  j.subjectId.toString() === lesson.subjectId._id.toString() &&
+                  j.lessonSlot === lessonSlot &&
+                  Number(j.shift) === Number(schedule.groupId.shift) &&
+                  j.isSubmitted === true
+                );
 
-              todayLessons.push({
-                lessonNumber: lessonSlot,
-                time: lesson.time || "Номуайян",
-                subject: lesson.subjectId?.name || "—",
-                subjectId: lesson.subjectId?._id,
-                group: schedule.groupId.name,
-                groupId: schedule.groupId._id,
-                shift: schedule.groupId.shift,
-                classroom: lesson.classroom || "—",
-                lessonType: lesson.lessonType || "lecture", // Default to lecture
-                isHeld: isHeld,
-                isCurrent: false, // frontend handles this or we can do it here
-              });
+                todayLessons.push({
+                  lessonNumber: lessonSlot,
+                  time: lesson.time || "Номуайян",
+                  subject: lesson.subjectId?.name || "—",
+                  subjectId: lesson.subjectId?._id,
+                  group: schedule.groupId.name,
+                  groupId: schedule.groupId._id,
+                  shift: schedule.groupId.shift,
+                  classroom: lesson.classroom || "—",
+                  lessonType: lesson.lessonType || "lecture",
+                  isHeld: isHeld,
+                  isCurrent: false,
+                });
+              }
             }
           }
         });
@@ -275,15 +307,15 @@ export const getMyTeachingSchedule = async (req, res) => {
     // Sort todayLessons by lessonNumber
     todayLessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
 
-    // Натиҷа
     res.json({
       groups: Array.from(groupsMap.values()),
       subjects: Array.from(subjectsSet),
       totalHours,
-      todayLessons, // ← МУҲИМ: барои "Дарсҳои имрӯз"
+      todayLessons,
     });
   } catch (err) {
     console.error("getMyTeachingSchedule error:", err);
     res.status(500).json({ message: "Хатогӣ дар сервер" });
   }
 };
+
