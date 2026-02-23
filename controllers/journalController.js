@@ -321,7 +321,34 @@ export const bulkUpdateJournalEntries = async (req, res) => {
 
         if (journal) {
           console.log(`[BULK] Found existing journal: ${journal._id}`);
-          if (currentUserRole !== "admin" && journal.teacherId.toString() !== currentUserId) {
+
+          let isAuthorized = currentUserRole === "admin";
+          if (!isAuthorized) {
+            // Check if current user is the owner
+            if (journal.teacherId.toString() === currentUserId) {
+              isAuthorized = true;
+            } else {
+              // Check if current user is assigned to THIS SUBJECT in THIS GROUP in the schedule
+              let groupSchedule = scheduleCache.get(groupId);
+              if (!groupSchedule) {
+                groupSchedule = await WeeklySchedule.findOne({ groupId });
+                scheduleCache.set(groupId, groupSchedule);
+              }
+
+              if (groupSchedule) {
+                // Find if user has any lessons for this subject in the schedule
+                const hasSubjectLesson = groupSchedule.week.some(day =>
+                  day.lessons.some(l =>
+                    String(l.subjectId?._id || l.subjectId) === String(subjectId) &&
+                    String(l.teacherId?._id || l.teacherId) === String(currentUserId)
+                  )
+                );
+                if (hasSubjectLesson) isAuthorized = true;
+              }
+            }
+          }
+
+          if (!isAuthorized) {
             errors.push(`Дастрасӣ манъ: журнали ${journal._id} ба муаллими дигар тааллуқ дорад`);
             continue;
           }
@@ -691,9 +718,25 @@ export const getWeeklyGrades = async (req, res) => {
       query.subjectId = subjectId;
     }
 
-    // Teacher Filter: only see journals they marked (or were assigned to)
+    // Teacher Filter: only see journals for subjects they are assigned to in the schedule
     if (currentUserRole === "teacher") {
-      query.teacherId = currentUserId;
+      const teacherSchedules = await WeeklySchedule.find({
+        groupId,
+        "week.lessons.teacherId": currentUserId
+      }).select("week.lessons.subjectId week.lessons.teacherId");
+
+      const teacherSubjectIds = new Set();
+      teacherSchedules.forEach(s => {
+        s.week.forEach(d => {
+          d.lessons.forEach(l => {
+            if (String(l.teacherId?._id || l.teacherId) === currentUserId) {
+              teacherSubjectIds.add(String(l.subjectId?._id || l.subjectId));
+            }
+          });
+        });
+      });
+
+      query.subjectId = { $in: Array.from(teacherSubjectIds).map(id => new mongoose.Types.ObjectId(id)) };
     }
 
     const journals = await JournalEntry.find(query)
